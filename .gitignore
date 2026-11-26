@@ -1,0 +1,8 @@
+# 내 맥 전용 설정·개인 데이터 (배포하지 않음)
+config.sh
+state/
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+._*

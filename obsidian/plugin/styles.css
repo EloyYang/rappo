@@ -1,0 +1,83 @@
+.ks-root { display: flex; flex-direction: column; gap: 10px; }
+.ks-modal { width: min(900px, 95vw); }
+.ks-modal .modal-content { max-height: 75vh; overflow-y: auto; }
+.ks-tabs { display: flex; gap: 6px; }
+.ks-tabs button.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
+.ks-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ks-bar .ks-q { flex: 1 1 240px; min-width: 0; }
+.ks-bar .ks-who { flex: 0 1 120px; min-width: 0; }
+.ks-room { max-width: 220px; }
+.ks-range { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ks-status, .ks-hint, .ks-muted { color: var(--text-muted); font-size: var(--font-ui-small); }
+.ks-count { color: var(--text-muted); font-size: var(--font-ui-small); margin-bottom: 4px; }
+.ks-date { display: flex; justify-content: space-between; align-items: baseline; margin-top: 12px;
+  padding-bottom: 2px; border-bottom: 1px solid var(--background-modifier-border); font-weight: 600; }
+.ks-daylink { font-size: var(--font-ui-smaller); font-weight: normal; cursor: pointer; margin-left: 8px; }
+.ks-msg { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; border-radius: 6px; cursor: pointer;
+  font-size: var(--font-ui-small); line-height: 1.45; }
+.ks-msg:hover { background: var(--background-modifier-hover); }
+.ks-msg.is-me .ks-who-name { color: var(--text-accent); }
+.ks-time { color: var(--text-faint); font-family: var(--font-monospace); flex: none; }
+.ks-roomtag { flex: none; font-size: var(--font-ui-smaller); padding: 0 6px; border-radius: 8px;
+  background: var(--background-secondary-alt); color: var(--text-muted); max-width: 140px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ks-who-name { flex: none; font-weight: 600; }
+.ks-text { word-break: break-word; }
+.ks-text mark { background: var(--text-highlight-bg); color: inherit; border-radius: 3px; }
+.ks-more { margin-top: 10px; width: 100%; }
+.ks-dayroom { margin-top: 8px; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 6px 8px; }
+.ks-dayroom summary { cursor: pointer; }
+.ks-roomname { font-weight: 600; }
+@media (max-width: 600px) {
+  .ks-room, .ks-bar .ks-who { flex: 1 1 45%; max-width: none; }
+  .ks-roomtag { max-width: 80px; }
+}
+/* v2: 통화 통합 · 방 입력 찾기 */
+.ks-tabs { flex-wrap: wrap; align-items: center; }
+.ks-spacer { flex: 1; }
+.ks-seg { display: flex; gap: 2px; }
+.ks-seg button { font-size: var(--font-ui-small); }
+.ks-seg button.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
+.ks-picker { position: relative; flex: 0 1 220px; min-width: 160px; }
+.ks-picker .ks-room { width: 100%; max-width: none; padding-right: 24px; }
+.ks-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); cursor: pointer;
+  color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.ks-suggest { position: absolute; z-index: 30; top: calc(100% + 2px); left: 0; min-width: 100%; width: max-content;
+  max-width: 360px; max-height: 320px; overflow-y: auto; background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border); border-radius: 8px; box-shadow: var(--shadow-s); padding: 4px; }
+.ks-opt { padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: var(--font-ui-small); white-space: nowrap; }
+.ks-opt:hover, .ks-opt.is-selected { background: var(--background-modifier-hover); }
+.ks-callhead { display: flex; justify-content: space-between; margin: 6px 0 2px; padding: 2px 6px;
+  font-size: var(--font-ui-small); font-weight: 600; color: var(--text-accent);
+  border-left: 3px solid var(--text-accent); background: var(--background-secondary); border-radius: 4px; }
+.ks-msg.is-call { margin-left: 10px; }
+.ks-msg.is-summary .ks-text { font-style: italic; }
+.ks-dayroom.is-call { border-color: var(--text-accent); }
+.ks-block .ks-results { max-height: 70vh; overflow-y: auto; }
+@media (max-width: 600px) { .ks-picker { flex: 1 1 100%; } }
+/* v3: 단체방에서 찾는 사람의 발언 강조 */
+.ks-msg.is-target { background: var(--text-highlight-bg); }
+/* v4: 통화/카톡 구역 · 최근 연락 */
+.ks-section { margin-top: 10px; border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 6px 10px 10px; }
+.ks-section.is-call { border-left: 4px solid var(--color-green, var(--text-accent)); }
+.ks-section.is-kakao { border-left: 4px solid var(--color-yellow, var(--text-accent)); }
+.ks-section-head { cursor: pointer; font-weight: 700; padding: 2px 0 4px; }
+div.ks-section-head { cursor: default; }
+.ks-section .ks-callhead { color: var(--text-normal); border-left-color: var(--color-green, var(--text-accent)); }
+.ks-recent-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.ks-check { display: inline-flex; align-items: center; gap: 4px; font-size: var(--font-ui-small); cursor: pointer; }
+.ks-recent { display: flex; flex-direction: column; }
+.ks-recent-row { padding: 7px 4px; border-bottom: 1px solid var(--background-modifier-border); }
+.ks-recent-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.ks-recent-name { font-weight: 600; cursor: pointer; text-decoration: none; color: var(--text-normal); }
+.ks-recent-name:hover { color: var(--text-accent); }
+.ks-recent-when { color: var(--text-muted); font-size: var(--font-ui-smaller); flex: none; }
+.ks-recent-ch { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.ks-badge { font-size: var(--font-ui-smaller); padding: 1px 8px; border-radius: 10px; cursor: pointer; text-decoration: none;
+  background: var(--background-secondary-alt); color: var(--text-muted); }
+.ks-badge.is-latest { background: var(--interactive-accent); color: var(--text-on-accent); }
+.ks-recent-text { margin-top: 3px; color: var(--text-muted); font-size: var(--font-ui-small);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 대시보드 노트를 넓게 (cssclasses: rappo-wide) */
+.rappo-wide { --file-line-width: 100%; }
+.markdown-preview-view.rappo-wide .markdown-preview-sizer, .rappo-wide .cm-sizer { max-width: 100% !important; }

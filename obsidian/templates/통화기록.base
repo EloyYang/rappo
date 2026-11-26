@@ -1,0 +1,136 @@
+formulas:
+  최근연락: if(last_call && last_kakao, if(last_call > last_kakao, last_call, last_kakao), if(last_call, last_call, last_kakao))
+  이름: if(name && name != "정보 없음", name, phone)
+properties:
+  name:
+    displayName: 이름
+  phone:
+    displayName: 번호
+  file.name:
+    displayName: 노트
+views:
+  - type: table
+    name: 최근 통화
+    filters:
+      and:
+        - file.inFolder("{{BASE}}/통화")
+    order:
+      - datetime
+      - name
+      - phone
+      - duration
+      - summary
+      - file.name
+    sort:
+      - property: datetime
+        direction: DESC
+    limit: 20
+  - type: table
+    name: 최근 30일 통화
+    filters:
+      and:
+        - file.inFolder("{{BASE}}/통화")
+        - datetime >= today() - "30d"
+    groupBy:
+      property: contact
+      direction: ASC
+    order:
+      - datetime
+      - duration
+      - summary
+      - file.name
+    sort:
+      - property: datetime
+        direction: DESC
+  - type: table
+    name: 연락처
+    filters:
+      and:
+        - file.inFolder("{{BASE}}/연락처")
+    order:
+      - name
+      - phone
+      - call_count
+      - last_call
+      - last_kakao
+      - formula.최근연락
+      - memo
+      - file.name
+    sort:
+      - property: formula.최근연락
+        direction: DESC
+  - type: cards
+    name: 연락처 카드
+    filters:
+      and:
+        - file.inFolder("{{BASE}}/연락처")
+    order:
+      - formula.이름
+      - phone
+      - call_count
+      - formula.최근연락
+      - memo
+    sort:
+      - property: formula.최근연락
+        direction: DESC
+  - type: table
+    name: 연락처별 통화
+    filters:
+      and:
+        - file.inFolder("{{BASE}}/통화")
+    groupBy:
+      property: contact
+      direction: ASC
+    order:
+      - datetime
+      - duration
+      - summary
+      - file.name
+    sort:
+      - property: datetime
+        direction: DESC
+  - type: table
+    name: 카톡방
+    filters:
+      and:
+        - file.inFolder("{{BASE}}/카톡")
+        - '!file.hasProperty("month")'
+    order:
+      - file.name
+      - kind
+      - message_count
+      - first_message
+      - last_message
+    sort:
+      - property: last_message
+        direction: DESC
+  - type: table
+    name: 카톡 최근 대화
+    filters:
+      and:
+        - file.inFolder("{{BASE}}/카톡")
+        - file.hasProperty("month")
+    order:
+      - file.name
+      - room
+      - kind
+      - message_count
+    sort:
+      - property: month
+        direction: DESC
+    limit: 30
+  - type: table
+    name: 요약 없는 통화
+    filters:
+      and:
+        - file.inFolder("{{BASE}}/통화")
+        - "!summary"
+    order:
+      - datetime
+      - name
+      - phone
+      - duration
+      - file.name
+    sort:
+      - property: datetime
+        direction: DESC
