@@ -261,16 +261,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatus()
     }
 
-    // 로고와 같은 모양: 꼬리 달린 두 원(말풍선)이 겹친 교집합
+    // 로고와 같은 모양: 두 원이 겹친 교집합
     static func barIcon(busy: Bool) -> NSImage {
         let img = NSImage(size: NSSize(width: 20, height: 18), flipped: false) { _ in
-            let l = NSRect(x: 1.6, y: 3.6, width: 11.4, height: 11.4)
-            let r = NSRect(x: 7.0, y: 3.6, width: 11.4, height: 11.4)
+            let l = NSRect(x: 1.4, y: 3.3, width: 11.4, height: 11.4)
+            let r = NSRect(x: 7.2, y: 3.3, width: 11.4, height: 11.4)
             NSColor.black.set()
-            for tail in [[NSPoint(x: 3.4, y: 6.0), NSPoint(x: 2.0, y: 2.6), NSPoint(x: 5.6, y: 4.4)],
-                         [NSPoint(x: 16.6, y: 6.0), NSPoint(x: 18.0, y: 2.6), NSPoint(x: 14.4, y: 4.4)]] {
-                let t = NSBezierPath(); t.move(to: tail[0]); t.line(to: tail[1]); t.line(to: tail[2]); t.close(); t.fill()
-            }
             let lp = NSBezierPath(ovalIn: l), rp = NSBezierPath(ovalIn: r)
             lp.lineWidth = 1.5; rp.lineWidth = 1.5
             if busy { lp.fill() } else { lp.stroke() }

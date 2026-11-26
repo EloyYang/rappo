@@ -1,10 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- Rappo(라포): 두 사람의 말풍선이 겹친 자리(교집합) -->
-  <defs><clipPath id="L"><circle cx="420" cy="486" r="200"/></clipPath></defs>
+  <!-- Rappo(라포): 두 사람이 겹치는 자리(교집합) -->
+  <defs><clipPath id="L"><circle cx="420" cy="512" r="200"/></clipPath></defs>
   <rect x="100" y="100" width="824" height="824" rx="186" fill="#26215C"/>
-  <path fill="#EEEDFE" d="M288 628 Q284 676 262 702 Q300 696 330 664 Z"/>
-  <path fill="#7F77DD" d="M736 628 Q740 676 762 702 Q724 696 694 664 Z"/>
-  <circle cx="420" cy="486" r="200" fill="#EEEDFE"/>
-  <circle cx="604" cy="486" r="200" fill="#7F77DD"/>
-  <circle cx="604" cy="486" r="200" fill="#F0997B" clip-path="url(#L)"/>
+  <circle cx="420" cy="512" r="200" fill="#EEEDFE"/>
+  <circle cx="604" cy="512" r="200" fill="#7F77DD"/>
+  <circle cx="604" cy="512" r="200" fill="#F0997B" clip-path="url(#L)"/>
 </svg>
