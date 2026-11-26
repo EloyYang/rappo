@@ -269,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSColor.black.set()
             let lp = NSBezierPath(ovalIn: l), rp = NSBezierPath(ovalIn: r)
             lp.lineWidth = 1.1; rp.lineWidth = 1.1
-            if busy { lp.fill() } else { lp.stroke() }
+            if busy { lp.stroke() } else { lp.fill() }   // 기본: 왼쪽 원 채움, 정리 중: 겹친 곳만
             rp.stroke()
             NSGraphicsContext.saveGraphicsState()
             lp.addClip()
