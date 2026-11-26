@@ -268,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let r = NSRect(x: 7.2, y: 3.3, width: 11.4, height: 11.4)
             NSColor.black.set()
             let lp = NSBezierPath(ovalIn: l), rp = NSBezierPath(ovalIn: r)
-            lp.lineWidth = 1.5; rp.lineWidth = 1.5
+            lp.lineWidth = 1.1; rp.lineWidth = 1.1
             if busy { lp.fill() } else { lp.stroke() }
             rp.stroke()
             NSGraphicsContext.saveGraphicsState()
