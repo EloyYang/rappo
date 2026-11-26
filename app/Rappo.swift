@@ -267,8 +267,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let l = NSRect(x: 1.6, y: 3.6, width: 11.4, height: 11.4)
             let r = NSRect(x: 7.0, y: 3.6, width: 11.4, height: 11.4)
             NSColor.black.set()
-            for tail in [[NSPoint(x: 3.0, y: 6.4), NSPoint(x: 0.6, y: 1.6), NSPoint(x: 6.0, y: 4.2)],
-                         [NSPoint(x: 17.0, y: 6.4), NSPoint(x: 19.4, y: 1.6), NSPoint(x: 14.0, y: 4.2)]] {
+            for tail in [[NSPoint(x: 3.4, y: 6.0), NSPoint(x: 2.0, y: 2.6), NSPoint(x: 5.6, y: 4.4)],
+                         [NSPoint(x: 16.6, y: 6.0), NSPoint(x: 18.0, y: 2.6), NSPoint(x: 14.4, y: 4.4)]] {
                 let t = NSBezierPath(); t.move(to: tail[0]); t.line(to: tail[1]); t.line(to: tail[2]); t.close(); t.fill()
             }
             let lp = NSBezierPath(ovalIn: l), rp = NSBezierPath(ovalIn: r)

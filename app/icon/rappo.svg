@@ -2,8 +2,8 @@
   <!-- Rappo(라포): 두 사람의 말풍선이 겹친 자리(교집합) -->
   <defs><clipPath id="L"><circle cx="420" cy="486" r="200"/></clipPath></defs>
   <rect x="100" y="100" width="824" height="824" rx="186" fill="#26215C"/>
-  <path fill="#EEEDFE" d="M300 640 Q272 716 212 752 Q300 748 366 690 Z"/>
-  <path fill="#7F77DD" d="M724 640 Q752 716 812 752 Q724 748 658 690 Z"/>
+  <path fill="#EEEDFE" d="M288 628 Q284 676 262 702 Q300 696 330 664 Z"/>
+  <path fill="#7F77DD" d="M736 628 Q740 676 762 702 Q724 696 694 664 Z"/>
   <circle cx="420" cy="486" r="200" fill="#EEEDFE"/>
   <circle cx="604" cy="486" r="200" fill="#7F77DD"/>
   <circle cx="604" cy="486" r="200" fill="#F0997B" clip-path="url(#L)"/>
