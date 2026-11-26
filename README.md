@@ -1,5 +1,7 @@
 # Rappo(라포) — 통화 녹취·카카오톡을 옵시디언에 자동 정리
 
+소개 페이지: https://eloylab.it/rappo/
+
 통화 녹음 파일을 맥 안에서 음성인식·화자 구분하고, 카카오톡 맥 앱의 대화를 읽어서
 옵시디언 볼트에 **사람별로** 통화·대화 기록을 모아 줍니다.
 - 대시보드: 최근 연락(카톡·통화 구분 없이), 대화·통화 통합 검색, 날짜별 보기, 연락처·카톡방 표
@@ -9,12 +11,13 @@
 
 준비물: Apple Silicon 맥, [Homebrew](https://brew.sh), [옵시디언](https://obsidian.md)(볼트 하나 이상), 카카오톡 맥 앱(로그인)
 
-1. 받은 `Rappo` 폴더를 원하는 곳(예: `~/Applications/Rappo-src` 또는 `~/Documents/Rappo`)에 둡니다.
-   설치 뒤에도 앱이 이 폴더의 코드를 쓰니 지우지 마세요.
+1. **[Rappo.zip 내려받기](https://github.com/EloyYang/rappo/releases/latest/download/Rappo.zip)** → 압축을 풀어
+   `Rappo` 폴더를 `~/Documents` 같은 곳에 둡니다. 설치 뒤에도 앱이 이 폴더의 코드를 쓰니 지우지 마세요.
 2. 터미널에서:
    ```bash
    bash ~/Documents/Rappo/install.sh
    ```
+   (또는 `git clone https://github.com/EloyYang/rappo.git ~/Documents/Rappo` 후 같은 명령)
    - 녹취 폴더를 묻습니다 (휴대폰 통화 녹음이 동기화되는 폴더).
    - 이미 녹취가 있으면 모두 변환할지 묻습니다 (기본: 지금부터 생기는 것만).
    - 옵시디언 볼트를 찾아 **대시보드·표·검색 플러그인을 자동으로 넣습니다** (볼트가 여러 개면 번호로 고름).
@@ -71,3 +74,9 @@ python3 obsidian_setup.py --vault ~/볼트 --base "통화기록"   # 볼트·폴
 | `config.sh` | 설치할 때 생기는 내 맥 전용 설정 (배포본에는 넣지 않음) |
 
 > 카카오톡 앱이 큰 업데이트를 하면 데이터 형식이 바뀌어 `kakao_db.py` 가 동작하지 않을 수 있습니다.
+
+## 개인정보
+
+녹음 파일과 카카오톡 대화는 내 맥에서만 읽고, 결과는 내 옵시디언 볼트에만 저장합니다. Rappo는 어떤 서버로도
+데이터를 보내지 않습니다. (요약을 켜면 통화 전사문이 Claude Code 를 통해 Anthropic 으로 전송됩니다.)
+통화 녹음과 대화 기록은 상대방의 개인정보이기도 하니, 관련 법과 상대방의 뜻을 존중해 사용하세요.
