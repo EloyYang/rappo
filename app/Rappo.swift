@@ -261,32 +261,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatus()
     }
 
+    // 로고와 같은 모양: 꼬리 달린 두 원(말풍선)이 겹친 교집합
     static func barIcon(busy: Bool) -> NSImage {
         let img = NSImage(size: NSSize(width: 20, height: 18), flipped: false) { _ in
-            func bubble(_ r: NSRect, tail: [NSPoint]) -> NSBezierPath {
-                let p = NSBezierPath(ovalIn: r)
-                let t = NSBezierPath(); t.move(to: tail[0]); t.line(to: tail[1]); t.line(to: tail[2]); t.close()
-                p.append(t)
-                return p
-            }
+            let l = NSRect(x: 1.6, y: 3.6, width: 11.4, height: 11.4)
+            let r = NSRect(x: 7.0, y: 3.6, width: 11.4, height: 11.4)
             NSColor.black.set()
-            let back = bubble(NSRect(x: 7.5, y: 2.5, width: 11, height: 9.2),
-                              tail: [NSPoint(x: 15.5, y: 4), NSPoint(x: 18.6, y: 0.8), NSPoint(x: 12.5, y: 3)])
-            let front = bubble(NSRect(x: 1.2, y: 6.8, width: 11.6, height: 9.6),
-                               tail: [NSPoint(x: 4.2, y: 8.2), NSPoint(x: 1, y: 4.6), NSPoint(x: 7.2, y: 7.2)])
-            if busy {  // 정리 중: 뒤 말풍선을 채움
-                back.fill()
-                NSGraphicsContext.current?.compositingOperation = .clear
-                NSBezierPath(ovalIn: NSRect(x: 0.1, y: 5.7, width: 13.8, height: 11.8)).fill()
-                NSGraphicsContext.current?.compositingOperation = .sourceOver
-                front.lineWidth = 1.5; front.stroke()
-            } else {
-                back.lineWidth = 1.5; back.stroke()
-                NSGraphicsContext.current?.compositingOperation = .clear
-                NSBezierPath(ovalIn: NSRect(x: 0.1, y: 5.7, width: 13.8, height: 11.8)).fill()
-                NSGraphicsContext.current?.compositingOperation = .sourceOver
-                front.fill()
+            for tail in [[NSPoint(x: 3.0, y: 6.4), NSPoint(x: 0.6, y: 1.6), NSPoint(x: 6.0, y: 4.2)],
+                         [NSPoint(x: 17.0, y: 6.4), NSPoint(x: 19.4, y: 1.6), NSPoint(x: 14.0, y: 4.2)]] {
+                let t = NSBezierPath(); t.move(to: tail[0]); t.line(to: tail[1]); t.line(to: tail[2]); t.close(); t.fill()
             }
+            let lp = NSBezierPath(ovalIn: l), rp = NSBezierPath(ovalIn: r)
+            lp.lineWidth = 1.5; rp.lineWidth = 1.5
+            if busy { lp.fill() } else { lp.stroke() }
+            rp.stroke()
+            NSGraphicsContext.saveGraphicsState()
+            lp.addClip()
+            NSBezierPath(ovalIn: r).fill()   // 교집합
+            NSGraphicsContext.restoreGraphicsState()
             return true
         }
         img.isTemplate = true
