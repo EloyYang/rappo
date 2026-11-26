@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- Rappo(라포): 두 사람이 겹치는 자리(교집합) -->
+  <!-- Rappo(라포): 두 사람이 겹치는 자리(교집합) — 가까울수록 색이 깊어진다 -->
   <defs><clipPath id="L"><circle cx="420" cy="512" r="200"/></clipPath></defs>
-  <rect x="100" y="100" width="824" height="824" rx="186" fill="#26215C"/>
-  <circle cx="420" cy="512" r="200" fill="#EEEDFE"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#F3EFFC"/>
+  <circle cx="420" cy="512" r="200" fill="#B8AEEF"/>
   <circle cx="604" cy="512" r="200" fill="#7F77DD"/>
-  <circle cx="604" cy="512" r="200" fill="#F0997B" clip-path="url(#L)"/>
+  <circle cx="604" cy="512" r="200" fill="#3C3489" clip-path="url(#L)"/>
 </svg>
