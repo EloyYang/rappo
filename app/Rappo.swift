@@ -40,7 +40,7 @@ final class Settings {
             d.set(true, forKey: "migratedFromCallNotes")
         }
         d.register(defaults: ["kakaoMode": KakaoMode.change.rawValue, "intervalMin": 30,
-                              "quietSec": 60, "minGapMin": 5, "summary": true, "pollMin": 5, "recordMode": 0])
+                              "quietSec": 60, "minGapMin": 5, "summary": true, "pollMin": 5, "recordMode": 0, "kakaoOn": true])
     }
 
     private func path(_ key: String, _ envKey: String) -> String {
@@ -59,6 +59,7 @@ final class Settings {
     var quietSec: Int { get { max(10, d.integer(forKey: "quietSec")) } set { d.set(newValue, forKey: "quietSec") } }
     var minGapMin: Int { get { max(0, d.integer(forKey: "minGapMin")) } set { d.set(newValue, forKey: "minGapMin") } }
     var summary: Bool { get { d.bool(forKey: "summary") } set { d.set(newValue, forKey: "summary") } }
+    var kakaoOn: Bool { get { d.bool(forKey: "kakaoOn") } set { d.set(newValue, forKey: "kakaoOn") } }
     // 이 시각(통화 시각) 이전 녹취는 건너뜀. "yyyy-MM-dd HH:mm", 비우면 전부
     var since: String { get { d.string(forKey: "since") ?? "" } set { d.set(newValue, forKey: "since") } }
     var recordMode: RecordMode {
@@ -72,7 +73,7 @@ final class Settings {
         return f.string(from: Date())
     }
 
-    static let keys = ["recordDir", "vaultDir", "kakaoDir", "kakaoMe", "kakaoMode", "intervalMin", "quietSec", "minGapMin", "summary", "since", "pollMin", "recordMode"]
+    static let keys = ["recordDir", "vaultDir", "kakaoDir", "kakaoMe", "kakaoMode", "intervalMin", "quietSec", "minGapMin", "summary", "since", "pollMin", "recordMode", "kakaoOn"]
     // 볼트 안에서 노트를 모아 두는 폴더 (install.sh 가 config.sh 에 적음)
     var baseDir: String { let b = base["RAPPO_BASE"] ?? ""; return b.isEmpty ? "2. Areas/통화기록" : b }
 
@@ -199,6 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case (false, false): recordLine.title = "녹취: 감시 안 함 — 폴더를 확인하세요"
         }
         let mode = s.kakaoMode
+        if !s.kakaoOn { modeLine.title = "카톡: 가져오지 않음"; return }
         if mode != .interval {
             if let w = Watcher(path: kakaoDBDir, handler: { [weak self] paths in self?.kakaoDBChanged(paths) }) {
                 watchers.append(w)
@@ -220,27 +222,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func buildMenu() {
-        for m in [statusLine, lastLine, recordLine, modeLine] { m.isEnabled = false; menu.addItem(m) }
+        statusLine.isEnabled = false
+        menu.addItem(statusLine)
         menu.addItem(.separator())
-        add("지금 실행 (녹취 + 카톡)", #selector(runNow), "r")
-        add("녹취만 처리", #selector(runRecordings), "")
-        add("빈 요약 채우기", #selector(runResummarize), "")
+        add("지금 정리하기", #selector(runNow), "r")
+        add("옵시디언에서 대시보드 열기", #selector(openDashboard), "d")
         menu.addItem(.separator())
         add("설정…", #selector(openSettings), ",")
-        add("로그 보기", #selector(openLog), "l")
-        add("녹취 폴더 열기", #selector(openRecord), "")
-        add("통화기록 폴더 열기", #selector(openNotes), "")
-        menu.addItem(.separator())
-        add("옵시디언에 대시보드·검색 설치", #selector(setupObsidian), "")
-        add("내 목소리 등록…", #selector(enrollVoice), "")
-        menu.addItem(.separator())
-        loginItem.target = self
-        menu.addItem(loginItem)
-        add("전체 디스크 접근 권한 설정…", #selector(openPrivacy), "")
-        menu.addItem(.separator())
-        add("종료", #selector(quit), "q")
-        menu.delegate = self
+        add("Rappo 종료", #selector(quit), "q")
         item.menu = menu
+        updateStatus()
+    }
+
+    // 메뉴 맨 위 한 줄: 지금 상태 · 마지막 정리 시각
+    var lastRun = ""
+    var lastError = false
+    func updateStatus(_ now: String? = nil) {
+        let state = now ?? (running != nil ? "정리 중…" : "대기 중")
+        var t = "● " + state
+        if !lastRun.isEmpty { t += " · 마지막 정리 " + lastRun + (lastError ? " (문제 있음)" : "") }
+        statusLine.title = t
     }
 
     func add(_ title: String, _ sel: Selector, _ key: String) {
@@ -250,15 +251,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        updateStatus()
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
     func setIcon(busy: Bool) {
-        let name = busy ? "arrow.triangle.2.circlepath" : "phone.bubble"
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: "Rappo")
-        img?.isTemplate = true
-        item.button?.image = img
-        statusLine.title = busy ? "처리 중…" : "대기 중"
+        item.button?.image = AppDelegate.barIcon(busy: busy)
+        item.button?.toolTip = "Rappo"
+        updateStatus()
+    }
+
+    static func barIcon(busy: Bool) -> NSImage {
+        let img = NSImage(size: NSSize(width: 20, height: 18), flipped: false) { _ in
+            func bubble(_ r: NSRect, tail: [NSPoint]) -> NSBezierPath {
+                let p = NSBezierPath(ovalIn: r)
+                let t = NSBezierPath(); t.move(to: tail[0]); t.line(to: tail[1]); t.line(to: tail[2]); t.close()
+                p.append(t)
+                return p
+            }
+            NSColor.black.set()
+            let back = bubble(NSRect(x: 7.5, y: 2.5, width: 11, height: 9.2),
+                              tail: [NSPoint(x: 15.5, y: 4), NSPoint(x: 18.6, y: 0.8), NSPoint(x: 12.5, y: 3)])
+            let front = bubble(NSRect(x: 1.2, y: 6.8, width: 11.6, height: 9.6),
+                               tail: [NSPoint(x: 4.2, y: 8.2), NSPoint(x: 1, y: 4.6), NSPoint(x: 7.2, y: 7.2)])
+            if busy {  // 정리 중: 뒤 말풍선을 채움
+                back.fill()
+                NSGraphicsContext.current?.compositingOperation = .clear
+                NSBezierPath(ovalIn: NSRect(x: 0.1, y: 5.7, width: 13.8, height: 11.8)).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                front.lineWidth = 1.5; front.stroke()
+            } else {
+                back.lineWidth = 1.5; back.stroke()
+                NSGraphicsContext.current?.compositingOperation = .clear
+                NSBezierPath(ovalIn: NSRect(x: 0.1, y: 5.7, width: 13.8, height: 11.8)).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                front.fill()
+            }
+            return true
+        }
+        img.isTemplate = true
+        img.accessibilityDescription = "Rappo"
+        return img
     }
 
     // MARK: 변경 감지
@@ -301,7 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         kakaoDebounce = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
             self?.request(["--kakao-db"])
         }
-        statusLine.title = running == nil ? "카톡 변경 감지 — 대기 중" : statusLine.title
+        if running == nil { updateStatus("카톡 새 대화 — 곧 정리") }
     }
 
     // MARK: 실행
@@ -309,6 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func request(_ args: [String]) {
         var args = args
         if !s.summary && !args.contains("--resummarize") { args.append("--no-summary") }
+        if !s.kakaoOn { args.removeAll { $0 == "--kakao-db" } }
         if running != nil {
             if pendingArgs == nil || args.contains("--kakao-db") { pendingArgs = args }
             return
@@ -337,6 +371,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         f.dateFormat = "M/d HH:mm"
         let ok = p.terminationStatus == 0 ? "" : " (오류 \(p.terminationStatus) — 로그 확인)"
         lastLine.title = "마지막 실행: \(f.string(from: Date()))\(ok)"
+        lastRun = f.string(from: Date())
+        lastError = p.terminationStatus != 0
+        updateStatus()
+        settingsWC?.refreshStatus()
         let a = p.arguments ?? []
         if a.contains("--setup-obsidian") {
             if p.terminationStatus == 0 {
@@ -359,7 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func openSettings() {
         if settingsWC == nil {
-            settingsWC = SettingsWindow(settings: s) { [weak self] in self?.applySettings() }
+            settingsWC = SettingsWindow(settings: s, app: self)
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWC?.load()
@@ -378,6 +416,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc func openRecord() { openDir(s.recordDir) }
     @objc func openNotes() { openDir(s.vaultDir + "/" + s.baseDir) }
+
+    var dashboardPath: String { s.vaultDir + "/" + s.baseDir + "/통화기록 대시보드.md" }
+    @objc func openDashboard() {
+        guard FileManager.default.fileExists(atPath: dashboardPath) else {
+            alert("대시보드가 아직 없어요", "설정… → 일반 → '옵시디언에 설치'를 눌러 주세요.")
+            return
+        }
+        var c = URLComponents(string: "obsidian://open")!
+        c.queryItems = [URLQueryItem(name: "path", value: dashboardPath)]
+        if let u = c.url { NSWorkspace.shared.open(u) }
+    }
+    // 카카오톡 데이터 폴더를 읽을 수 있으면 전체 디스크 접근 권한이 있는 것
+    var hasFullDiskAccess: Bool {
+        (try? FileManager.default.contentsOfDirectory(atPath: NSHomeDirectory() + "/Library/Containers/com.kakao.KakaoTalkMac/Data/Library")) != nil
+            || (try? FileManager.default.contentsOfDirectory(atPath: NSHomeDirectory() + "/Library/Safari")) != nil
+    }
+    var loginEnabled: Bool { SMAppService.mainApp.status == .enabled }
 
     @objc func setupObsidian() {
         guard !s.vaultDir.isEmpty, FileManager.default.fileExists(atPath: s.vaultDir + "/.obsidian") else {
@@ -432,213 +487,280 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 final class SettingsWindow: NSWindowController {
     let s: Settings
-    let onSave: () -> Void
+    weak var app: AppDelegate?
 
+    // 일반
     let recordField = SettingsWindow.pathLabel()
+    let skipOldCheck = NSButton(checkboxWithTitle: "이 시각 이전 녹취는 건너뛰기", target: nil, action: nil)
+    let sincePicker = NSDatePicker()
+    let summaryCheck = NSButton(checkboxWithTitle: "통화 요약 만들기 (Claude Code 필요)", target: nil, action: nil)
     let vaultField = SettingsWindow.pathLabel()
-    let kakaoField = SettingsWindow.pathLabel()
-    let meField = NSTextField()
+    let obsidianState = SettingsWindow.note("")
+    let loginCheck = NSButton(checkboxWithTitle: "로그인하면 Rappo 자동 실행", target: nil, action: nil)
+    let fdaState = NSTextField(labelWithString: "")
+    // 카카오톡
+    let kakaoCheck = NSButton(checkboxWithTitle: "카카오톡 대화 가져오기", target: nil, action: nil)
     let modePopup = NSPopUpButton()
     let intervalField = SettingsWindow.numField()
-    let quietField = SettingsWindow.numField()
-    let gapField = SettingsWindow.numField()
-    let sinceField = NSTextField()
-    let pollField = SettingsWindow.numField()
+    let meField = NSTextField()
+    // 고급
     let recordPopup = NSPopUpButton()
-    let summaryCheck = NSButton(checkboxWithTitle: "Claude 로 통화 요약 만들기", target: nil, action: nil)
+    let pollField = SettingsWindow.numField()
+    let kakaoField = SettingsWindow.pathLabel()
+    let watchState = SettingsWindow.note("")
 
-    init(settings: Settings, onSave: @escaping () -> Void) {
+    init(settings: Settings, app: AppDelegate) {
         s = settings
-        self.onSave = onSave
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 420),
+        self.app = app
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Rappo 설정"
         w.isReleasedWhenClosed = false
         super.init(window: w)
         build()
-        if let v = w.contentView { w.setContentSize(v.fittingSize) }
         w.center()
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    // MARK: 부품
     static func pathLabel() -> NSTextField {
         let f = NSTextField(labelWithString: "")
         f.lineBreakMode = .byTruncatingMiddle
-        f.textColor = .secondaryLabelColor
         f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        f.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        f.widthAnchor.constraint(equalToConstant: 300).isActive = true
         return f
     }
     static func numField() -> NSTextField {
         let f = NSTextField()
         f.alignment = .right
-        f.widthAnchor.constraint(equalToConstant: 60).isActive = true
-        let nf = NumberFormatter(); nf.allowsFloats = false; nf.minimum = 0
+        f.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        let nf = NumberFormatter(); nf.allowsFloats = false; nf.minimum = 1
         f.formatter = nf
         return f
     }
-
-    func folderRow(_ title: String, _ field: NSTextField, _ sel: Selector) -> [NSView] {
-        let b = NSButton(title: "변경…", target: self, action: sel)
-        let row = NSStackView(views: [field, b])
-        row.spacing = 8
-        return [NSTextField(labelWithString: title), row]
+    static func note(_ t: String) -> NSTextField {
+        let f = NSTextField(wrappingLabelWithString: t)
+        f.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        f.textColor = .secondaryLabelColor
+        f.preferredMaxLayoutWidth = 470
+        return f
     }
-    func numRow(_ title: String, _ field: NSTextField, _ unit: String) -> [NSView] {
-        let row = NSStackView(views: [field, NSTextField(labelWithString: unit)])
-        row.spacing = 6
-        return [NSTextField(labelWithString: title), row]
+    func header(_ t: String) -> NSTextField {
+        let f = NSTextField(labelWithString: t)
+        f.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        return f
     }
-
-    func sinceRow() -> [NSView] {
-        sinceField.placeholderString = "비우면 전부 처리"
-        sinceField.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        let b = NSButton(title: "지금부터", target: self, action: #selector(sinceNow))
-        let row = NSStackView(views: [sinceField, b, NSTextField(labelWithString: "이후 통화만")])
-        row.spacing = 8
-        return [NSTextField(labelWithString: "처리 시작 시각"), row]
+    func button(_ t: String, _ sel: Selector) -> NSButton {
+        let b = NSButton(title: t, target: self, action: sel)
+        b.bezelStyle = .rounded
+        return b
     }
-    @objc func sinceNow() { sinceField.stringValue = Settings.nowStamp() }
-
-    func build() {
-        recordPopup.addItems(withTitles: ["자동 (로컬=변경 감지, 네트워크 드라이브=주기 확인)",
-                                          "새 파일이 생기면 바로 (변경 감지)", "일정 주기로 새 파일 확인", "변경 감지 + 주기 확인"])
-        recordPopup.target = self
-        recordPopup.action = #selector(modeChanged)
-        modePopup.addItems(withTitles: ["DB 파일이 바뀔 때만 (변경 감지)", "일정 주기로", "변경 감지 + 주기"])
-        modePopup.target = self
-        modePopup.action = #selector(modeChanged)
-        meField.placeholderString = "예: 홍길동, 길동  (쉼표로 구분, 비우면 자동)"
-
-        let note = NSTextField(wrappingLabelWithString:
-            "변경 감지: 카카오톡 맥 앱이 새 메시지를 받아 DB 파일이 바뀌면, 변화가 멈춘 뒤 ‘대기’ 시간만큼 기다렸다가 반영합니다. " +
-            "대화가 이어질 때 너무 자주 돌지 않도록 ‘최소 간격’을 둡니다. 카카오톡 앱이 꺼져 있으면 DB 가 바뀌지 않으므로 반영도 없습니다.\n" +
-            "녹취: 네트워크 드라이브(/Volumes 의 NAS 등)는 다른 기기가 넣은 파일을 맥이 알려주지 않아 변경 감지가 동작하지 않습니다. " +
-            "‘자동’은 이런 폴더에서 주기 확인으로 바꿔 줍니다. 주기 확인도 새 파일이 있을 때만 처리합니다.")
-        note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        note.textColor = .secondaryLabelColor
-        note.preferredMaxLayoutWidth = 560
-
-        let grid = NSGridView(views: [
-            folderRow("녹취 폴더", recordField, #selector(pickRecord)),
-            sinceRow(),
-            [NSTextField(labelWithString: "녹취 감지 방식"), recordPopup],
-            numRow("새 파일 확인", pollField, "분마다 (주기 확인을 쓸 때)"),
-            folderRow("옵시디언 볼트", vaultField, #selector(pickVault)),
-            folderRow("카톡 내보내기 폴더", kakaoField, #selector(pickKakao)),
-            [NSTextField(labelWithString: "내 카톡 이름"), meField],
-            [NSTextField(labelWithString: "카톡 반영 방식"), modePopup],
-            numRow("주기", intervalField, "분마다"),
-            numRow("변경 후 대기", quietField, "초 (변화가 멈춘 뒤)"),
-            numRow("최소 간격", gapField, "분 (연속 실행 방지)"),
-            [NSGridCell.emptyContentView, summaryCheck],
-        ])
-        grid.rowSpacing = 10
-        grid.columnSpacing = 12
-        grid.column(at: 0).xPlacement = .trailing
-        grid.rowAlignment = .firstBaseline
-
-        let reset = NSButton(title: "기본값으로", target: self, action: #selector(resetDefaults))
-        let cancel = NSButton(title: "취소", target: self, action: #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "저장", target: self, action: #selector(save))
-        save.keyEquivalent = "\r"
-        let spacer = NSView()
-        let buttons = NSStackView(views: [reset, spacer, cancel, save])
-        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-
-        let stack = NSStackView(views: [grid, note, buttons])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 16
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        buttons.widthAnchor.constraint(equalTo: grid.widthAnchor).isActive = true
-
-        let v = window!.contentView!
-        v.addSubview(stack)
+    func row(_ views: [NSView], spacing: CGFloat = 8) -> NSStackView {
+        let r = NSStackView(views: views)
+        r.spacing = spacing
+        r.alignment = .firstBaseline
+        return r
+    }
+    func page(_ views: [NSView]) -> NSView {
+        let st = NSStackView(views: views)
+        st.orientation = .vertical
+        st.alignment = .leading
+        st.spacing = 10
+        st.edgeInsets = NSEdgeInsets(top: 18, left: 22, bottom: 18, right: 22)
+        st.translatesAutoresizingMaskIntoConstraints = false
+        let v = NSView()
+        v.addSubview(st)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: v.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: v.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: v.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: v.bottomAnchor),
+            st.topAnchor.constraint(equalTo: v.topAnchor), st.leadingAnchor.constraint(equalTo: v.leadingAnchor),
+            st.trailingAnchor.constraint(equalTo: v.trailingAnchor),
+            st.bottomAnchor.constraint(lessThanOrEqualTo: v.bottomAnchor),
+        ])
+        return v
+    }
+    func gap(_ h: CGFloat = 6) -> NSView { let v = NSView(); v.heightAnchor.constraint(equalToConstant: h).isActive = true; return v }
+
+    // MARK: 화면
+    func build() {
+        for c in [skipOldCheck, summaryCheck, loginCheck, kakaoCheck] { c.target = self; c.action = #selector(changed) }
+        sincePicker.datePickerStyle = .textFieldAndStepper
+        sincePicker.datePickerElements = [.yearMonthDay, .hourMinute]
+        sincePicker.target = self; sincePicker.action = #selector(changed)
+        modePopup.addItems(withTitles: ["새 대화가 오면 바로 (권장)", "정해진 간격마다", "둘 다"])
+        modePopup.target = self; modePopup.action = #selector(changed)
+        recordPopup.addItems(withTitles: ["자동 (권장)", "새 파일이 생기면 바로", "정해진 간격마다 확인", "둘 다"])
+        recordPopup.target = self; recordPopup.action = #selector(changed)
+        for f in [intervalField, pollField] { f.target = self; f.action = #selector(changed) }
+        meField.placeholderString = "비우면 자동으로 찾아요 (예: 홍길동, 길동)"
+        meField.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        meField.target = self; meField.action = #selector(changed)
+
+        let general = page([
+            header("녹취"),
+            row([NSTextField(labelWithString: "폴더"), recordField, button("변경…", #selector(pickRecord)), button("열기", #selector(openRecord))]),
+            row([skipOldCheck, sincePicker]),
+            summaryCheck,
+            gap(),
+            header("옵시디언"),
+            row([NSTextField(labelWithString: "볼트"), vaultField, button("변경…", #selector(pickVault))]),
+            row([button("옵시디언에 설치·업데이트", #selector(installObsidian)), button("대시보드 열기", #selector(openDashboard))]),
+            obsidianState,
+            gap(),
+            header("앱"),
+            loginCheck,
+            row([NSTextField(labelWithString: "전체 디스크 접근 권한"), fdaState, button("시스템 설정 열기", #selector(openPrivacy))]),
+            SettingsWindow.note("카카오톡 대화와 네트워크 드라이브의 녹취를 읽으려면 필요해요. 시스템 설정 목록에 Rappo 를 추가해 켜 주세요."),
+        ])
+        let kakao = page([
+            kakaoCheck,
+            SettingsWindow.note("카카오톡 맥 앱에 로그인되어 있어야 해요. 대화는 이 맥 안에서만 읽어요."),
+            gap(),
+            row([NSTextField(labelWithString: "가져오는 때"), modePopup]),
+            row([NSTextField(labelWithString: "간격"), intervalField, NSTextField(labelWithString: "분마다")]),
+            gap(),
+            row([NSTextField(labelWithString: "내 카톡 이름"), meField]),
+            SettingsWindow.note("대화에서 ‘나’로 표시할 이름이에요. 보통은 비워 두면 돼요."),
+        ])
+        let tools = page([
+            header("도구"),
+            row([button("지금 정리하기", #selector(runNow)), button("빈 요약 채우기", #selector(resummarize)), button("로그 보기", #selector(openLog))]),
+            row([button("내 목소리 등록…", #selector(enroll))]),
+            SettingsWindow.note("내 목소리만 녹음된 파일(10초 이상)을 등록하면 전사문에서 ‘나’와 상대를 구분해요."),
+            gap(),
+            header("녹취 폴더 확인 방식"),
+            row([recordPopup, NSTextField(labelWithString: "확인 간격"), pollField, NSTextField(labelWithString: "분")]),
+            watchState,
+            SettingsWindow.note("NAS 같은 네트워크 드라이브는 새 파일을 바로 알 수 없어서, 자동이면 정해진 간격마다 확인해요."),
+            gap(),
+            header("카카오톡 내보내기 파일"),
+            row([kakaoField, button("변경…", #selector(pickKakao))]),
+            SettingsWindow.note("카톡에서 ‘대화 내보내기’로 받은 파일을 이 폴더에 넣으면 함께 정리해요. (맥 앱 대화는 자동이라 필요 없어요)"),
+            gap(),
+            button("모든 설정을 처음 값으로", #selector(resetDefaults)),
+        ])
+
+        let tabs = NSTabView()
+        for (t, v) in [("일반", general), ("카카오톡", kakao), ("고급", tools)] {
+            let it = NSTabViewItem(identifier: t); it.label = t; it.view = v; tabs.addTabViewItem(it)
+        }
+        tabs.translatesAutoresizingMaskIntoConstraints = false
+        let cv = window!.contentView!
+        cv.addSubview(tabs)
+        NSLayoutConstraint.activate([
+            tabs.topAnchor.constraint(equalTo: cv.topAnchor, constant: 12),
+            tabs.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 12),
+            tabs.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -12),
+            tabs.bottomAnchor.constraint(equalTo: cv.bottomAnchor, constant: -12),
+            tabs.widthAnchor.constraint(equalToConstant: 580),
+            tabs.heightAnchor.constraint(equalToConstant: 470),
         ])
     }
 
+    static let fmt: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"; f.locale = Locale(identifier: "en_US_POSIX"); return f }()
+
+    // 설정 값 → 화면
     func load() {
         recordField.stringValue = s.recordDir
         vaultField.stringValue = s.vaultDir
-        kakaoField.stringValue = s.kakaoDir
-        meField.stringValue = s.kakaoMe
+        kakaoField.stringValue = s.kakaoDir.isEmpty ? "(지정 안 함)" : s.kakaoDir
+        let since = SettingsWindow.fmt.date(from: s.since)
+        skipOldCheck.state = since == nil ? .off : .on
+        sincePicker.dateValue = since ?? Date()
+        summaryCheck.state = s.summary ? .on : .off
+        kakaoCheck.state = s.kakaoOn ? .on : .off
         modePopup.selectItem(at: s.kakaoMode.rawValue)
         intervalField.integerValue = s.intervalMin
-        quietField.integerValue = s.quietSec
-        gapField.integerValue = s.minGapMin
-        summaryCheck.state = s.summary ? .on : .off
-        sinceField.stringValue = s.since
-        pollField.integerValue = s.pollMin
+        meField.stringValue = s.kakaoMe
         recordPopup.selectItem(at: s.recordMode.rawValue)
-        modeChanged()
+        pollField.integerValue = s.pollMin
+        refreshStatus()
     }
 
-    @objc func modeChanged() {
-        let m = KakaoMode(rawValue: modePopup.indexOfSelectedItem) ?? .change
-        intervalField.isEnabled = m != .change
-        quietField.isEnabled = m != .interval
-        gapField.isEnabled = m != .interval
-        let r = RecordMode(rawValue: recordPopup.indexOfSelectedItem) ?? .auto
-        pollField.isEnabled = r != .change
+    // 상태 표시 (권한·로그인·옵시디언·감시 방식)
+    func refreshStatus() {
+        guard let app = app else { return }
+        loginCheck.state = app.loginEnabled ? .on : .off
+        let ok = app.hasFullDiskAccess
+        fdaState.stringValue = ok ? "✅ 허용됨" : "⚠️ 필요해요"
+        fdaState.textColor = ok ? .systemGreen : .systemOrange
+        let hasVault = FileManager.default.fileExists(atPath: s.vaultDir + "/.obsidian")
+        let hasDash = FileManager.default.fileExists(atPath: app.dashboardPath)
+        obsidianState.stringValue = !hasVault ? "⚠️ 이 폴더는 옵시디언 볼트가 아니에요. ‘변경…’으로 볼트를 골라 주세요."
+            : hasDash ? "✅ 대시보드: \(s.baseDir)/통화기록 대시보드" : "아직 설치 전이에요. ‘옵시디언에 설치·업데이트’를 눌러 주세요."
+        watchState.stringValue = "지금: " + app.recordLine.title.replacingOccurrences(of: "녹취: ", with: "")
+        let k = s.kakaoOn
+        modePopup.isEnabled = k
+        meField.isEnabled = k
+        intervalField.isEnabled = k && s.kakaoMode != .change
+        pollField.isEnabled = s.recordMode != .change
+        sincePicker.isEnabled = skipOldCheck.state == .on
     }
 
-    func pick(_ field: NSTextField) {
+    // 화면 → 설정 값 (바꾸면 바로 적용)
+    @objc func changed() {
+        s.since = skipOldCheck.state == .on ? SettingsWindow.fmt.string(from: sincePicker.dateValue) : ""
+        s.summary = summaryCheck.state == .on
+        s.kakaoOn = kakaoCheck.state == .on
+        s.kakaoMode = KakaoMode(rawValue: modePopup.indexOfSelectedItem) ?? .change
+        s.intervalMin = max(5, intervalField.integerValue)
+        s.kakaoMe = meField.stringValue.trimmingCharacters(in: .whitespaces)
+        s.recordMode = RecordMode(rawValue: recordPopup.indexOfSelectedItem) ?? .auto
+        s.pollMin = max(1, pollField.integerValue)
+        if let app = app, (loginCheck.state == .on) != app.loginEnabled { app.toggleLogin() }
+        app?.applySettings()
+        refreshStatus()
+    }
+
+    func pick(_ title: String, _ current: String, _ done: @escaping (String) -> Void) {
         let p = NSOpenPanel()
+        p.message = title
         p.canChooseDirectories = true
         p.canChooseFiles = false
         p.canCreateDirectories = true
-        if !field.stringValue.isEmpty { p.directoryURL = URL(fileURLWithPath: field.stringValue) }
+        if !current.isEmpty { p.directoryURL = URL(fileURLWithPath: current) }
         p.beginSheetModal(for: window!) { r in
-            if r == .OK, let u = p.url { field.stringValue = u.path }
+            if r == .OK, let u = p.url { done(u.path) }
         }
     }
-    @objc func pickRecord() { pick(recordField) }
-    @objc func pickVault() { pick(vaultField) }
-    @objc func pickKakao() { pick(kakaoField) }
+    // config.sh 와 같은 값이면 저장하지 않는다 (config.sh 를 따라가도록)
+    func store(_ v: String, _ envKey: String) -> String { v == (s.base[envKey] ?? "") ? "" : v }
+
+    @objc func pickRecord() {
+        pick("통화 녹음 파일이 모이는 폴더를 고르세요", s.recordDir) { [self] path in
+            guard path != s.recordDir else { return }
+            s.recordDir = store(path, "RAPPO_RECORD")
+            // 새 폴더의 기존 녹취는 건너뛰도록 지금 시각부터
+            if s.since.isEmpty { s.since = Settings.nowStamp() }
+            load(); app?.applySettings(); refreshStatus()
+        }
+    }
+    @objc func pickVault() {
+        pick("옵시디언 볼트 폴더를 고르세요", s.vaultDir) { [self] path in
+            s.vaultDir = store(path, "RAPPO_VAULT"); load()
+        }
+    }
+    @objc func pickKakao() {
+        pick("카카오톡 ‘대화 내보내기’ 파일을 넣을 폴더를 고르세요", s.kakaoDir) { [self] path in
+            s.kakaoDir = store(path, "RAPPO_KAKAO"); load(); app?.applySettings()
+        }
+    }
+    @objc func openRecord() { app?.openRecord() }
+    @objc func installObsidian() { app?.setupObsidian() }
+    @objc func openDashboard() { app?.openDashboard() }
+    @objc func openPrivacy() { app?.openPrivacy() }
+    @objc func runNow() { app?.runNow() }
+    @objc func resummarize() { app?.runResummarize() }
+    @objc func openLog() { app?.openLog() }
+    @objc func enroll() { app?.enrollVoice() }
 
     @objc func resetDefaults() {
-        s.reset()
-        load()
-        onSave()
-    }
-    @objc func cancel() { window?.close() }
-
-    @objc func save() {
-        let since = sinceField.stringValue.trimmingCharacters(in: .whitespaces)
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"; f.locale = Locale(identifier: "en_US_POSIX")
-        if !since.isEmpty && f.date(from: since) == nil {
-            let a = NSAlert()
-            a.messageText = "처리 시작 시각 형식이 맞지 않습니다"
-            a.informativeText = "예: 2026-11-26 01:30  (비우면 전부 처리)"
-            a.beginSheetModal(for: window!)
-            return
+        let a = NSAlert()
+        a.messageText = "모든 설정을 처음 값으로 되돌릴까요?"
+        a.informativeText = "녹취·볼트 폴더는 설치할 때 정한 값으로 돌아갑니다. 노트는 그대로예요."
+        a.addButton(withTitle: "되돌리기"); a.addButton(withTitle: "취소")
+        a.beginSheetModal(for: window!) { [self] r in
+            guard r == .alertFirstButtonReturn else { return }
+            s.reset(); load(); app?.applySettings()
         }
-        // 녹취 폴더를 바꿨는데 시작 시각을 비워 두면, 기존 파일은 건너뛰도록 지금 시각으로
-        let recordChanged = recordField.stringValue != s.recordDir
-        s.since = (recordChanged && since.isEmpty) ? Settings.nowStamp() : since
-        s.pollMin = pollField.integerValue
-        s.recordMode = RecordMode(rawValue: recordPopup.indexOfSelectedItem) ?? .auto
-        // config.sh 와 같은 값이면 저장하지 않는다 (config.sh 를 따라가도록)
-        func store(_ v: String, _ envKey: String) -> String { v == (s.base[envKey] ?? "") ? "" : v }
-        s.recordDir = store(recordField.stringValue, "RAPPO_RECORD")
-        s.vaultDir = store(vaultField.stringValue, "RAPPO_VAULT")
-        s.kakaoDir = store(kakaoField.stringValue, "RAPPO_KAKAO")
-        s.kakaoMe = meField.stringValue.trimmingCharacters(in: .whitespaces)
-        s.kakaoMode = KakaoMode(rawValue: modePopup.indexOfSelectedItem) ?? .change
-        s.intervalMin = intervalField.integerValue
-        s.quietSec = quietField.integerValue
-        s.minGapMin = gapField.integerValue
-        s.summary = summaryCheck.state == .on
-        onSave()
-        window?.close()
     }
 }
 
