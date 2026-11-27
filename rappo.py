@@ -23,6 +23,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tasks  # noqa: E402
+
 def _env(name: str, default: Path) -> Path:
     v = os.environ.get(name)
     return Path(v).expanduser() if v else default
@@ -39,6 +42,7 @@ BASE_DIR = os.environ.get("RAPPO_BASE", "").strip() or "2. Areas/통화기록"  
 MODEL = "mlx-community/whisper-large-v3-turbo"
 SR = 16000
 MODELS = _env("RAPPO_HOME", Path.home() / ".venvs/rappo") / "models"  # 화자분리 ONNX 모델
+TASK_STATE = MODELS.parent / "state" / "tasks.json"  # 할 일을 이미 찾아본 통화·카톡 묶음
 ME_FILE = MODELS / "me.npy"  # 내 목소리 프로필
 ME_MIN_SIM, ME_MIN_MARGIN = 0.5, 0.1
 AUDIO_EXT ={".m4a", ".mp3", ".wav", ".amr", ".3gp", ".aac", ".ogg"}
@@ -267,9 +271,8 @@ def _prompt(transcript: str, when: datetime | None) -> str:
         base +
         "아래는 전화 통화 녹취를 음성인식한 전사문이야(오인식이 있을 수 있음). "
         "통화 기록용으로 한국어 마크다운으로만 답해. 형식:\n"
-        "한 줄 요약\n\n- 핵심 내용 불릿 2~5개\n\n할 일이 있으면 '- [ ] ' 체크박스로, 없으면 생략.\n"
-        "만나기로 하거나 약속·예약·방문처럼 날짜가 정해진 일정이 있으면 통화 날짜 기준으로 날짜를 계산해 "
-        "'- 📅 YYYY-MM-DD HH:MM 내용' (시각을 모르면 'YYYY-MM-DD 내용') 형식으로, 없으면 생략.\n"
+        "첫 줄: 한 줄 요약(기호 없이)\n\n- 핵심 내용 불릿 2~5개 (대화를 그대로 옮기지 말고 내용을 정리)\n"
+        "할 일·일정은 따로 뽑으니 쓰지 마.\n"
         "머리말·인사·제목 없이 바로 시작.\n\n---\n" + transcript
     )
 
@@ -558,6 +561,8 @@ def main():
     ap.add_argument("--vault", type=Path, default=VAULT)
     ap.add_argument("--no-summary", action="store_true", help="통화 요약 생략")
     ap.add_argument("--limit", type=int, default=0, help="이번에 처리할 최대 개수")
+    ap.add_argument("--redo-tasks", action="store_true", help="모든 통화 노트에서 할 일 다시 찾기 (요약 속 옛 할 일은 뺌)")
+    ap.add_argument("--kakao-tasks", action="store_true", help="최근 카톡 대화에서 할 일 찾기만")
     ap.add_argument("--resummarize", action="store_true", help="요약이 비어 있는 통화 노트만 요약 채우기")
     ap.add_argument("--kakao-src", type=Path, default=KAKAO_DIR)
     ap.add_argument("--kakao-me", action="append", default=list(KAKAO_ME), metavar="이름", help="내 카톡 이름 (여러 번 지정 가능)")
@@ -593,6 +598,10 @@ def main():
         return enroll(a.enroll)
     if a.resummarize:
         return resummarize(call_dir, cdir)
+    if a.redo_tasks:
+        return tasks.redo_calls(root, call_dir, TASK_STATE, read_fm)
+    if a.kakao_tasks:
+        return print(f"카톡 할 일 {tasks.from_kakao(root, TASK_STATE)}개")
 
     done = set() if a.rebuild else {read_fm(p).get("source") for p in call_dir.glob("*.md")}
     # 네트워크 드라이브(SMB)는 큰 폴더에서 같은 파일을 여러 번 돌려줄 때가 있어 set 으로 중복 제거
@@ -625,6 +634,13 @@ def main():
             (f"{s['speaker']}: " if s["speaker"] else "") + s["text"] for s in segs), info["dt"])
         out = write_call(call_dir, info, display, contact, segs, summary, dur)
         print(f"     ✓ {out.relative_to(a.vault)}", flush=True)
+        if not a.no_summary:
+            st = tasks.load_state(TASK_STATE)
+            k = tasks.from_call(root, out, "\n".join((f"{s['speaker']}: " if s["speaker"] else "") + s["text"] for s in segs),
+                                info["dt"], display if display != info["phone"] else info["phone"], st)
+            tasks.save_state(TASK_STATE, st)
+            if k:
+                print(f"     ✓ 할 일 {k}개", flush=True)
         touched.add((contact, info["phone"]))
 
     for contact, phone in touched:
@@ -636,6 +652,8 @@ def main():
 
     import kakao
     kakao.run(a.kakao_src, root, a.kakao_me, from_db=a.kakao_db, min_msgs=a.kakao_min)
+    if not a.no_summary:
+        tasks.from_kakao(root, TASK_STATE)
 
 
 if __name__ == "__main__":

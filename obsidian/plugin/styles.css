@@ -98,3 +98,20 @@ div.ks-section-head { cursor: default; }
 .ks-day-row.is-guess .ks-todo-text { color: var(--text-muted); }
 .ks-guess-btns { display: flex; gap: 6px; margin-top: 4px; }
 .ks-guess-btns button { font-size: var(--font-ui-smaller); padding: 2px 10px; height: auto; }
+/* v7: 할 일 — 우선순위·마감·수정·지우기 */
+.ks-todo-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.ks-prio { flex: none; font-size: var(--font-ui-smaller); font-weight: 700; padding: 0 8px; border-radius: 10px; cursor: pointer; text-decoration: none; }
+.ks-prio.is-high { background: rgba(var(--color-red-rgb), .15); color: var(--color-red); }
+.ks-prio.is-mid { background: rgba(var(--color-yellow-rgb), .18); color: var(--color-orange); }
+.ks-prio.is-low { background: var(--background-secondary-alt); color: var(--text-muted); }
+.ks-dday.is-late { background: rgba(var(--color-red-rgb), .15); color: var(--color-red); }
+.ks-todo-top .ks-dday { margin-top: 0; }
+.ks-todo-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; }
+.ks-todo-meta .ks-daylink { margin-left: 0; }
+.ks-todo { align-items: flex-start; }
+.ks-todo-body { flex: 1; }
+.ks-todo-act { display: flex; gap: 8px; flex: none; opacity: .55; }
+.ks-todo-act a { cursor: pointer; text-decoration: none; }
+.ks-todo:hover .ks-todo-act { opacity: 1; }
+.ks-task-form .ks-form-row { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ks-task-form input, .ks-task-form select { width: 100%; }

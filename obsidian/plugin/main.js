@@ -253,7 +253,7 @@ class Index {
     const see = (d) => { if (!d) return; st.days.add(d); if (!st.first || d < st.first) st.first = d; if (d > st.last) st.last = d; };
     for (const c of this.files.values()) {
       const k = this.pick(c, room, '');
-      if (k === 1 && c.call) { st.calls++; see(c.call.date); st.todo += c.todos.filter((t) => !t.done).length; }
+      if (k === 1 && c.call) { st.calls++; see(c.call.date); }
       else if (k === 1) { st.talk += c.msgs.length; for (const m of c.msgs) see(m.date); }
       else if (k === 2) for (const m of c.msgs) if (m.who === room) { st.group++; st.groups.add(c.room); see(m.date); }
     }
@@ -373,6 +373,7 @@ class SearchView {
     r.addClass('ks-root');
     const status = r.createDiv({ cls: 'ks-status', text: '대화·통화 색인 중…' });
     await this.plugin.index.ensure();
+    await this.plugin.tasks.load();
     status.remove();
     const idx = this.plugin.index;
 
@@ -461,6 +462,7 @@ class SearchView {
 
   personCard(box, room) {
     const st = this.plugin.index.stats(room);
+    st.todo = (this.plugin.tasks.cache || []).filter((t) => t.status === ' ' && t.who === room).length;
     if (!st.last) return;
     const card = box.createDiv({ cls: 'ks-person' });
     const parts = [];
@@ -661,50 +663,182 @@ class RecentView {
 function box0(r, text) { r.createDiv({ cls: 'ks-hint', text }); }
 const CARE_DAYS = 30;
 
-// ---------- 통화 할 일 (요약의 - [ ] 체크박스) ----------
+// ---------- 할 일 (<base>/할 일.md — 통화·카톡에서 Rappo 가 찾은 것 + 직접 적은 것) ----------
+// 한 줄: - [ ] 할 일 ⏫ 📅 2026-12-03 ⏰ 15:00 👤 홍길동 💬 메모 🔗 [[노트|통화 11/3]] 🆔 ab12cd
+//   상태 ' ' 남음 · 'x' 끝냄 · '-' 지움(다시 생기지 않게 남겨 둠)
+const TASK_LINE = /^(\s*)-\s+\[(.)\]\s+(.*)$/;
+const TASK_MARK = /\s*(⏫|🔼|🔽|📅|⏰|👤|💬|🔗|🆔)\s*/gu;
+const PRIO_SYM = { 높음: '⏫', 보통: '🔼', 낮음: '🔽' };
+const PRIO_OF = { '⏫': '높음', '🔼': '보통', '🔽': '낮음' };
+const PRIO_RANK = { 높음: 0, 보통: 1, '': 1, 낮음: 2 };
+
+function parseTask(raw, line) {
+  const m = TASK_LINE.exec(raw);
+  if (!m) return null;
+  const t = { line, raw, status: m[2], text: '', prio: '', due: '', time: '', who: '', ctx: '', link: '', id: '' };
+  const body = m[3], marks = [...body.matchAll(TASK_MARK)];
+  t.text = (marks.length ? body.slice(0, marks[0].index) : body).trim();
+  marks.forEach((k, i) => {
+    const v = body.slice(k.index + k[0].length, i + 1 < marks.length ? marks[i + 1].index : body.length).trim();
+    const s = k[1];
+    if (PRIO_OF[s]) t.prio = PRIO_OF[s];
+    else if (s === '📅') t.due = v; else if (s === '⏰') t.time = v; else if (s === '👤') t.who = v;
+    else if (s === '💬') t.ctx = v; else if (s === '🔗') t.link = v; else if (s === '🆔') t.id = v;
+  });
+  return t;
+}
+function taskLine(t) {
+  const p = [`- [${t.status || ' '}] ${t.text.trim()}`];
+  if (t.prio) p.push(PRIO_SYM[t.prio]);
+  if (t.due) p.push(`📅 ${t.due}`);
+  if (t.due && t.time) p.push(`⏰ ${t.time}`);
+  if (t.who) p.push(`👤 ${t.who}`);
+  if (t.ctx) p.push(`💬 ${t.ctx}`);
+  if (t.link) p.push(`🔗 ${t.link}`);
+  if (t.id) p.push(`🆔 ${t.id}`);
+  return p.join(' ');
+}
+function taskSrc(t) { return /통화/.test(t.link) ? 'call' : /카톡/.test(t.link) ? 'kakao' : 'me'; }
+const TASKS_HEAD = `---
+tags: [할일]
+---
+# ✅ 할 일
+
+Rappo 가 통화·카톡에서 **내가 하기로 정한 일**과 확정된 약속을 모아요. 대시보드의 ✅ 할 일 칸에서 우선순위를 바꾸거나 고치고 지울 수 있어요.
+직접 적어도 돼요: \`- [ ] 할 일 🔼 📅 2026-12-03 👤 홍길동 💬 메모\` (⏫ 높음 · 🔼 보통 · 🔽 낮음)
+
+## 목록
+`;
+
+class Tasks {
+  constructor(plugin) { this.plugin = plugin; this.app = plugin.app; this.cache = []; }
+  get path() { return `${BASE}/할 일.md`; }
+  file() { const f = this.app.vault.getAbstractFileByPath(this.path); return f instanceof TFile ? f : null; }
+  async load() {
+    const f = this.file();
+    if (!f) { this.cache = []; return this.cache; }
+    const text = await this.app.vault.cachedRead(f);
+    this.cache = text.split('\n').map((l, i) => parseTask(l, i)).filter(Boolean);
+    return this.cache;
+  }
+  // 한 줄 바꾸기 (🆔 로 찾고, 없으면 원래 줄 그대로인 곳)
+  async update(t, changes) {
+    const f = this.file();
+    if (!f) return;
+    await this.app.vault.process(f, (text) => {
+      const ls = text.split('\n');
+      let i = t.id ? ls.findIndex((l) => l.includes(`🆔 ${t.id}`)) : -1;
+      if (i < 0) i = ls[t.line] === t.raw ? t.line : ls.indexOf(t.raw);
+      if (i >= 0) ls[i] = taskLine({ ...t, ...changes });
+      return ls.join('\n');
+    });
+  }
+  async add(t) {
+    const line = taskLine({ status: ' ', id: Math.random().toString(16).slice(2, 8), ...t });
+    const f = this.file();
+    if (f) await this.app.vault.process(f, (text) => text.replace(/\n*$/, '\n') + line + '\n');
+    else await this.app.vault.create(this.path, TASKS_HEAD + line + '\n');
+  }
+}
+
+class TaskModal extends Modal {
+  constructor(plugin, task, onSave) { super(plugin.app); this.plugin = plugin; this.task = task || {}; this.onSave = onSave; }
+  onOpen() {
+    const t = this.task, c = this.contentEl;
+    this.titleEl.setText(t.text ? '할 일 고치기' : '할 일 추가');
+    c.addClass('ks-task-form');
+    const field = (label, el) => { const r = c.createDiv({ cls: 'ks-form-row' }); r.createEl('label', { text: label }); r.appendChild(el); return el; };
+    const text = field('할 일', createEl('input', { type: 'text', value: t.text || '', attr: { placeholder: '무엇을 할지 (예: 견적서 보내기)' } }));
+    const prio = field('우선순위', createEl('select'));
+    for (const p of ['높음', '보통', '낮음']) prio.createEl('option', { value: p, text: `${PRIO_SYM[p]} ${p}` });
+    prio.value = t.prio || '보통';
+    const due = field('마감', createEl('input', { type: 'date', value: t.due || '' }));
+    const time = field('시각', createEl('input', { type: 'time', value: t.time || '' }));
+    const who = field('누구와', createEl('input', { type: 'text', value: t.who || '', attr: { placeholder: '약속한 사람' } }));
+    const ctx = field('메모', createEl('input', { type: 'text', value: t.ctx || '', attr: { placeholder: '무슨 일 때문인지' } }));
+    const btns = c.createDiv({ cls: 'ks-guess-btns' });
+    const save = btns.createEl('button', { text: '저장', cls: 'mod-cta' });
+    btns.createEl('button', { text: '취소' }).onclick = () => this.close();
+    save.onclick = async () => {
+      if (!text.value.trim()) { text.focus(); return; }
+      await this.onSave({ text: text.value.trim(), prio: prio.value, due: due.value, time: due.value ? time.value : '', who: who.value.trim(), ctx: ctx.value.trim() });
+      this.close();
+    };
+    setTimeout(() => text.focus(), 50);
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 class TodoView {
-  constructor(plugin, root) { this.plugin = plugin; this.app = plugin.app; this.root = root; this.done = false; this.shown = 20; }
+  constructor(plugin, root) { this.plugin = plugin; this.app = plugin.app; this.root = root; this.view = 'open'; this.src = ''; this.shown = 30; }
   async render() {
     const r = this.root;
     r.empty();
     r.addClass('ks-root');
-    const status = r.createDiv({ cls: 'ks-status', text: '할 일 모으는 중…' });
-    await this.plugin.index.ensure();
-    status.remove();
-    const all = this.plugin.index.todos();
-    const list = all.filter((t) => this.done || !t.done);
+    const tk = this.plugin.tasks;
+    const all = await tk.load();
     const bar = r.createDiv({ cls: 'ks-recent-bar' });
-    const lab = bar.createEl('label', { cls: 'ks-check' });
-    const cb = lab.createEl('input', { type: 'checkbox' });
-    cb.checked = this.done;
-    lab.appendText(' 끝낸 일 포함');
-    cb.onchange = () => { this.done = cb.checked; this.shown = 20; this.render(); };
-    bar.createSpan({ cls: 'ks-muted', text: `남은 일 ${all.filter((t) => !t.done).length}개 · 체크하면 통화 노트에도 반영돼요.` });
-    if (!list.length) { box0(r, '통화 요약에서 나온 할 일이 없어요.'); return; }
-    const box = r.createDiv({ cls: 'ks-recent' });
-    for (const t of list.slice(0, this.shown)) {
-      const row = box.createDiv({ cls: 'ks-todo' + (t.done ? ' is-done' : '') });
-      const c = row.createEl('input', { type: 'checkbox' });
-      c.checked = t.done;
-      c.onchange = () => this.toggle(t, c.checked);
-      const body = row.createDiv({ cls: 'ks-todo-body' });
-      body.createDiv({ text: t.text, cls: 'ks-todo-text' });
-      const meta = body.createEl('a', { cls: 'ks-muted', text: `📞 ${t.room} · ${when(t.call.date, t.call.time)}` });
-      meta.onclick = () => this.app.workspace.getLeaf(false).openFile(t.file, { eState: { line: t.line } });
+    const seg = bar.createDiv({ cls: 'ks-seg' });
+    const cnt = (s) => all.filter((t) => t.status === s).length;
+    for (const [v, label] of [['open', `남은 일 ${cnt(' ')}`], ['done', `끝낸 일 ${cnt('x') + cnt('X')}`], ['del', `지운 일 ${cnt('-')}`]]) {
+      const b = seg.createEl('button', { text: label });
+      b.toggleClass('is-active', this.view === v);
+      b.onclick = () => { this.view = v; this.shown = 30; this.render(); };
     }
+    const seg2 = bar.createDiv({ cls: 'ks-seg' });
+    for (const [v, label] of [['', '전체'], ['call', '📞 통화'], ['kakao', '💬 카톡'], ['me', '✏️ 직접']]) {
+      const b = seg2.createEl('button', { text: label });
+      b.toggleClass('is-active', this.src === v);
+      b.onclick = () => { this.src = v; this.render(); };
+    }
+    const add = bar.createEl('button', { text: '＋ 할 일 추가' });
+    add.onclick = () => new TaskModal(this.plugin, null, async (v) => { await tk.add(v); this.render(); }).open();
+    const st = { open: [' '], done: ['x', 'X'], del: ['-'] }[this.view];
+    const list = all.filter((t) => st.includes(t.status) && (!this.src || taskSrc(t) === this.src))
+      .sort((a, b) => (PRIO_RANK[a.prio] - PRIO_RANK[b.prio]) || ((a.due || '9999') .localeCompare(b.due || '9999')) || a.line - b.line);
+    if (!list.length) {
+      r.createDiv({ cls: 'ks-hint', text: this.view === 'open' ? '남은 할 일이 없어요. 통화·카톡에서 내가 하기로 한 일이 생기면 여기에 모여요.' : '없어요.' });
+      return;
+    }
+    const box = r.createDiv({ cls: 'ks-recent' });
+    for (const t of list.slice(0, this.shown)) this.row(box, t);
     if (list.length > this.shown) {
-      const more = box.createEl('button', { text: `더 보기 (${list.length - this.shown}개 남음)`, cls: 'ks-more' });
-      more.onclick = () => { this.shown += 20; this.render(); };
+      const more = box.createEl('button', { text: `더 보기 (${list.length - this.shown}개)`, cls: 'ks-more' });
+      more.onclick = () => { this.shown += 30; this.render(); };
     }
   }
-  async toggle(t, on) {
-    await this.app.vault.process(t.file, (text) => {
-      const ls = text.split('\n');
-      if (TODO_RE.test(ls[t.line] || '')) ls[t.line] = ls[t.line].replace(/\[[ xX]\]/, on ? '[x]' : '[ ]');
-      return ls.join('\n');
-    });
-    this.plugin.index.files.delete(t.file.path);
-    this.render();
+  row(box, t) {
+    const tk = this.plugin.tasks;
+    const row = box.createDiv({ cls: 'ks-todo' + (t.status !== ' ' ? ' is-done' : '') });
+    const c = row.createEl('input', { type: 'checkbox' });
+    c.checked = t.status === 'x' || t.status === 'X';
+    c.disabled = t.status === '-';
+    c.onchange = async () => { await tk.update(t, { status: c.checked ? 'x' : ' ' }); this.render(); };
+    const body = row.createDiv({ cls: 'ks-todo-body' });
+    const top = body.createDiv({ cls: 'ks-todo-top' });
+    const pr = top.createEl('a', { cls: `ks-prio is-${{ 높음: 'high', 보통: 'mid', 낮음: 'low' }[t.prio || '보통']}`, text: t.prio || '보통', attr: { 'aria-label': '눌러서 우선순위 바꾸기' } });
+    pr.onclick = async () => { const n = { 높음: '보통', 보통: '낮음', 낮음: '높음', '': '높음' }[t.prio]; await tk.update(t, { prio: n }); this.render(); };
+    top.createSpan({ cls: 'ks-todo-text', text: t.text });
+    if (t.due) {
+      const d = -daysSince(t.due);
+      top.createSpan({ cls: 'ks-dday' + (d < 0 ? ' is-late' : d <= 3 ? ' is-soon' : ''),
+        text: (d < 0 ? `${-d}일 지남` : d === 0 ? '오늘까지' : `D-${d}`) + ` · ${t.due.slice(5).replace('-', '/')}` + (t.time ? ` ${t.time}` : '') });
+    }
+    const meta = body.createDiv({ cls: 'ks-muted ks-todo-meta' });
+    if (t.who) { const a = meta.createEl('a', { text: `👤 ${t.who}`, cls: 'ks-daylink' }); a.onclick = () => new SearchModal(this.plugin, { room: t.who }).open(); }
+    if (t.ctx) meta.createSpan({ text: `💬 ${t.ctx}` });
+    const lk = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/.exec(t.link || '');
+    if (lk) { const a = meta.createEl('a', { text: `🔗 ${lk[2] || lk[1]}`, cls: 'ks-daylink' }); a.onclick = () => this.app.workspace.openLinkText(lk[1], this.plugin.tasks.path, false); }
+    const act = row.createDiv({ cls: 'ks-todo-act' });
+    const ed = act.createEl('a', { text: '✏️', attr: { 'aria-label': '고치기' } });
+    ed.onclick = () => new TaskModal(this.plugin, t, async (v) => { await tk.update(t, v); this.render(); }).open();
+    if (t.status === '-') {
+      const back = act.createEl('a', { text: '↩︎', attr: { 'aria-label': '되살리기' } });
+      back.onclick = async () => { await tk.update(t, { status: ' ' }); this.render(); };
+    } else {
+      const del = act.createEl('a', { text: '🗑', attr: { 'aria-label': '지우기 (잘못 생긴 할 일)' } });
+      del.onclick = async () => { await tk.update(t, { status: '-' }); this.render(); };
+    }
   }
 }
 
@@ -941,11 +1075,6 @@ class Days {
   plans() {
     const td = today(), from = addDays(td, -60), until = addDays(td, 180), out = new Map();
     for (const c of this.plugin.index.files.values()) {
-      for (const p of c.plans || []) {
-        if (p.date < td || p.date > until) continue;
-        const key = `call|${c.room}|${p.date}|${p.time}`;
-        out.set(key, { id: 'plan:' + key, date: p.date, time: p.time, room: c.room, src: 'call', text: p.text, file: c.file, line: p.line, said: c.call.date });
-      }
       if (c.src !== 'kakao') continue;
       for (const m of c.msgs) {
         if (m.date < from || !PLAN_KW.test(m.text)) continue;
@@ -956,12 +1085,20 @@ class Days {
         if (!prev || `${m.date} ${m.time}` > prev.said) out.set(key, { id: 'plan:' + key, ...w, room: c.room, src: 'kakao', who: m.who, text: m.text, file: c.file, line: m.line, said: `${m.date} ${m.time}` });
       }
     }
+    // 할 일 중 날짜·시각이 정해진 약속 (통화·카톡에서 AI 가 찾은 것)
+    const tf = this.plugin.tasks.file();
+    for (const t of this.plugin.tasks.cache || []) {
+      if (t.status !== ' ' || !t.due || !t.time || t.due < td || t.due > until) continue;
+      const key = `task|${t.id || t.text}`;
+      out.set(key, { id: 'plan:' + key, date: t.due, time: t.time, room: t.who || '나', src: taskSrc(t) === 'call' ? 'call' : 'kakao', text: t.text + (t.ctx ? ` (${t.ctx})` : ''), file: tf, line: t.line, said: '할 일' });
+    }
     return [...out.values()].sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
   }
 
   // 다가오는 날 목록 [{date, dday, title, label, names[], kind, guess?}]
   async upcoming() {
     await this.plugin.index.ensure();
+    await this.plugin.tasks.load();
     const { dated, dismissed } = await this.load();
     const ev = [];
     const push = (hit, o) => { if (hit) ev.push({ date: hit.date, dday: hit.i, ...o }); };
@@ -1177,11 +1314,13 @@ module.exports = class RappoSearch extends Plugin {
     BASE = base; CONTACTS = base + '/연락처'; KAKAO = base + '/카톡'; CALLS = base + '/통화';
     this.index = new Index(this.app);
     this.days = new Days(this);
+    this.tasks = new Tasks(this);
     const handler = (src, el, ctx) => ctx.addChild(new BlockChild(this, el));
     for (const name of ['대화검색', '카톡검색', 'kakao-search']) this.registerMarkdownCodeBlockProcessor(name, handler);
     this.registerMarkdownCodeBlockProcessor('최근연락', (src, el, ctx) => ctx.addChild(new RecentChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('챙길날', (src, el, ctx) => ctx.addChild(new DaysChild(this, el)));
     this.addCommand({ id: 'days', name: 'Rappo 챙길 날 적기', callback: () => this.days.openNote() });
+    this.addCommand({ id: 'task-add', name: 'Rappo 할 일 추가', callback: () => new TaskModal(this, null, (v) => this.tasks.add(v)).open() });
     // 옵시디언을 열면 하루 한 번, 3일 안에 챙길 날을 알림으로 (맥 알림용 upcoming.json 도 이때 새로 씀)
     this.app.workspace.onLayoutReady(() => setTimeout(() => this.dayNotice(), 8000));
     this.registerMarkdownCodeBlockProcessor('할일', (src, el, ctx) => ctx.addChild(new TodoChild(this, el)));
