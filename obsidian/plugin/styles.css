@@ -90,3 +90,11 @@ div.ks-section-head { cursor: default; }
 .ks-todo-body { display: flex; flex-direction: column; min-width: 0; }
 .ks-todo-body a { cursor: pointer; text-decoration: none; }
 .ks-todo.is-done .ks-todo-text { text-decoration: line-through; color: var(--text-muted); }
+/* v6: 챙길 날 */
+.ks-day-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 4px; border-bottom: 1px solid var(--background-modifier-border); }
+.ks-dday { flex: none; min-width: 48px; text-align: center; font-size: var(--font-ui-smaller); font-weight: 700; padding: 2px 6px; border-radius: 10px;
+  background: var(--background-secondary-alt); color: var(--text-muted); margin-top: 2px; }
+.ks-dday.is-soon { background: var(--interactive-accent); color: var(--text-on-accent); }
+.ks-day-row.is-guess .ks-todo-text { color: var(--text-muted); }
+.ks-guess-btns { display: flex; gap: 6px; margin-top: 4px; }
+.ks-guess-btns button { font-size: var(--font-ui-smaller); padding: 2px 10px; height: auto; }

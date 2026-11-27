@@ -148,6 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var watchers: [Watcher] = []
     var pollTimer: Timer?
     var knownRecords: Set<String>? = nil   // 주기 확인용: 마지막으로 본 녹취 파일 목록
+    var dayTimer: Timer?
+    var dayItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ n: Notification) {
         codeDir = Bundle.main.infoDictionary?["CNCodeDir"] as? String ?? ""
@@ -157,6 +159,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applySettings()
         // 시작 직후 한 번 (동기화가 붙을 시간을 조금 준다)
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.request(["--kakao-db"]) }
+        // 챙길 날 알림: 시작 30초 뒤, 그다음 1시간마다 (7·3·1일 전과 당일, 한 번씩)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.checkDays() }
+        dayTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkDays() }
     }
 
     // 이미 실행 중일 때 앱을 다시 열면(Finder 더블클릭 등) 설정 창
@@ -252,6 +257,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         updateStatus()
+        // 상태 줄 아래에 14일 안의 챙길 날 (최대 3개)
+        for m in dayItems { menu.removeItem(m) }
+        dayItems = upcomingDays().filter { $0.dday <= 14 }.prefix(3).map { e in
+            let m = NSMenuItem(title: "\(e.icon) \(e.dday == 0 ? "오늘" : "D-\(e.dday)") · \(e.title)", action: #selector(openDashboard), keyEquivalent: "")
+            m.target = self
+            m.toolTip = e.sub
+            return m
+        }
+        for (i, m) in dayItems.enumerated() { menu.insertItem(m, at: 1 + i) }
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
@@ -406,6 +420,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openNotes() { openDir(s.vaultDir + "/" + s.baseDir) }
 
     var dashboardPath: String { s.vaultDir + "/" + s.baseDir + "/통화기록 대시보드.md" }
+    // MARK: 챙길 날 (옵시디언 Rappo 플러그인이 쓰는 upcoming.json)
+    struct DayEvent { let date: String; let title: String; let sub: String; let dday: Int
+        var icon: String { title.contains("생일") ? "🎂" : title.contains("기념일") || title.contains("주년") ? "💐" : "🗓" } }
+
+    func upcomingDays() -> [DayEvent] {
+        let p = s.vaultDir + "/.obsidian/plugins/rappo/upcoming.json"
+        guard let data = FileManager.default.contents(atPath: p),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let evs = obj["events"] as? [[String: Any]] else { return [] }
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
+        let cal = Calendar.current, today = cal.startOfDay(for: Date())
+        return evs.compactMap { e -> DayEvent? in
+            guard let ds = e["date"] as? String, let t = e["title"] as? String, let d = f.date(from: ds) else { return nil }
+            let n = cal.dateComponents([.day], from: today, to: cal.startOfDay(for: d)).day ?? -1
+            return n >= 0 ? DayEvent(date: ds, title: t, sub: e["sub"] as? String ?? "", dday: n) : nil
+        }.sorted { $0.dday < $1.dday }
+    }
+
+    func checkDays() {
+        let ud = UserDefaults.standard
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
+        let todayS = f.string(from: Date())
+        // 지난 날짜의 기록은 지운다
+        var sent = Set((ud.stringArray(forKey: "dayNotified") ?? []).filter { String($0.prefix(10)) >= todayS })
+        for e in upcomingDays() where [7, 3, 1, 0].contains(e.dday) {
+            let key = "\(e.date)|\(e.title)|\(e.dday)"
+            if sent.contains(key) { continue }
+            sent.insert(key)
+            let head = e.dday == 0 ? "오늘은 \(e.title)" : "\(e.dday)일 뒤 \(e.title)"
+            notify(head, e.sub.isEmpty ? e.date : "\(e.date) · \(e.sub)")
+        }
+        ud.set(Array(sent), forKey: "dayNotified")
+    }
+
+    func notify(_ title: String, _ body: String) {
+        func esc(_ x: String) -> String { x.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", "display notification \"\(esc(body))\" with title \"Rappo · 챙길 날\" subtitle \"\(esc(title))\" sound name \"Glass\""]
+        try? p.run()
+    }
+
     @objc func openDashboard() {
         guard FileManager.default.fileExists(atPath: dashboardPath) else {
             alert("대시보드가 아직 없어요", "설정… → 일반 → '옵시디언에 설치'를 눌러 주세요.")
