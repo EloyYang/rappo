@@ -601,7 +601,7 @@ def main():
     if a.redo_tasks:
         return tasks.redo_calls(root, call_dir, TASK_STATE, read_fm)
     if a.kakao_tasks:
-        return print(f"카톡 할 일 {tasks.from_kakao(root, TASK_STATE)}개")
+        return print(f"카톡 할 일 {tasks.from_kakao(root, TASK_STATE, limit=10_000)}개")
 
     done = set() if a.rebuild else {read_fm(p).get("source") for p in call_dir.glob("*.md")}
     # 네트워크 드라이브(SMB)는 큰 폴더에서 같은 파일을 여러 번 돌려줄 때가 있어 set 으로 중복 제거

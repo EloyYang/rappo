@@ -33,7 +33,7 @@ TASK_KW = re.compile(
     r"준비|챙겨|알려\s*(?:줘|주세요|드릴)|연락\s*(?:드릴|할게|줘|주세요)|예약|제출|입금|결제|송금|보자|만나|약속|미팅|회의|방문"
 )
 MAX_KAKAO_CHUNKS = 8          # 한 번 실행할 때 카톡 묶음은 이만큼만 (나머지는 다음 실행에)
-KAKAO_DAYS = 14               # 최근 며칠 대화까지 볼지
+KAKAO_DAYS = 7                # 최근 며칠 대화까지 볼지
 
 HEADER = """---
 tags: [할일]
@@ -302,14 +302,26 @@ def transcript_of(note: Path) -> str:
     return re.sub(r"^`\d+:\d+` ", "", body, flags=re.M).replace("**", "").strip()
 
 
-def redo_calls(root: Path, call_dir: Path, state_path: Path, read_fm):
-    """기존 통화 노트 전부: 요약 속 옛 할 일을 빼고, 엄격한 기준으로 다시 뽑는다."""
+def redo_calls(root: Path, call_dir: Path, state_path: Path, read_fm, days: int = 7):
+    """기존 통화 노트: 요약 속 옛 할 일은 모두 빼고, 최근 days 일 통화만 엄격한 기준으로 다시 뽑는다.
+    그보다 오래된 통화는 다시 보지 않도록 표시만."""
     st = load_state(state_path)
-    notes = sorted(call_dir.glob("*.md"))
-    print(f"통화 {len(notes)}개에서 할 일 다시 찾기")
+    cut = datetime.now() - timedelta(days=days)
+    notes = []
+    for p in sorted(call_dir.glob("*.md")):
+        strip_old(p)
+        try:
+            when = datetime.fromisoformat(str(read_fm(p).get("datetime", ""))[:16])
+        except ValueError:
+            when = None
+        if when and when >= cut:
+            notes.append(p)
+        else:
+            st["calls"][p.stem] = True
+    save_state(state_path, st)
+    print(f"최근 {days}일 통화 {len(notes)}개에서 할 일 다시 찾기")
     total = 0
     for i, p in enumerate(notes, 1):
-        strip_old(p)
         fm = read_fm(p)
         try:
             when = datetime.fromisoformat(str(fm.get("datetime", ""))[:16])
@@ -354,7 +366,7 @@ def _kakao_days(kdir: Path, since: str):
     return out
 
 
-def from_kakao(root: Path, state_path: Path) -> int:
+def from_kakao(root: Path, state_path: Path, limit: int = MAX_KAKAO_CHUNKS) -> int:
     kdir = root / "카톡"
     if not kdir.is_dir():
         return 0
@@ -380,7 +392,7 @@ def from_kakao(root: Path, state_path: Path) -> int:
         todo.append((day, room, kind, stem, msgs))
     todo.sort(reverse=True)
     total = 0
-    for day, room, kind, stem, msgs in todo[:MAX_KAKAO_CHUNKS]:
+    for day, room, kind, stem, msgs in todo[:limit]:
         text = "\n".join(f"{t} {w}: {x}" for t, w, x in msgs)
         partner = room if kind != "단체" else f"단체방 '{room}' 사람들"
         items = extract(text, datetime.strptime(day, "%Y-%m-%d"), partner, "카카오톡 대화")
@@ -391,6 +403,6 @@ def from_kakao(root: Path, state_path: Path) -> int:
         save_state(state_path, st)
         print(f"  할 일 · 카톡 {room} {day}: {'+' + str(n) if n else '없음'}", flush=True)
     save_state(state_path, st)
-    if len(todo) > MAX_KAKAO_CHUNKS:
-        print(f"  할 일 · 카톡 {len(todo) - MAX_KAKAO_CHUNKS}묶음은 다음 실행에")
+    if len(todo) > limit:
+        print(f"  할 일 · 카톡 {len(todo) - limit}묶음은 다음 실행에")
     return total
