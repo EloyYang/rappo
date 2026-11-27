@@ -34,11 +34,13 @@ cat >"$APP/Contents/Info.plist" <<EOF
   <key>CFBundleDisplayName</key><string>Rappo</string>
   <key>CFBundleExecutable</key><string>Rappo</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>2.0</string>
+  <key>CFBundleShortVersionString</key><string>2.3</string>
   <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>챙길 날과 대화에서 정한 일정을 캘린더에 넣어요.</string>
+  <key>NSCalendarsUsageDescription</key><string>챙길 날과 대화에서 정한 일정을 캘린더에 넣어요.</string>
   <key>CNCodeDir</key><string>$CODE</string>
   <key>CNInterval</key><string>$INTERVAL</string>
 </dict></plist>

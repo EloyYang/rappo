@@ -12,6 +12,7 @@ const DAY_RE = /^### (\d{4}-\d{2}-\d{2})/;
 const MSG_RE = /^`(\d{2}:\d{2}(?::\d{2})?)` \*\*(.+?)\*\*: ?(.*)$/;
 const LINK_RE = /\[\[(?:[^\]|]*\|)?([^\]]+)\]\]/g;
 const PAGE = 100;
+const CALL_PLAN_RE = /^\s*[-*]\s+📅\s*(\d{4}-\d{2}-\d{2})(?:\s+(\d{1,2}:\d{2}))?\s+(.+)$/;
 const TODO_RE = /^\s*[-*]\s+\[([ xX])\]\s+(.+)$/;
 const DAY_MS = 86400000;
 function daysSince(d) { const x = new Date(d + 'T00:00:00'); return isNaN(x) ? 0 : Math.round((new Date(today() + 'T00:00:00') - x) / DAY_MS); }
@@ -69,7 +70,7 @@ class Index {
     const fm = this.app.metadataCache.getFileCache(f)?.frontmatter || {};
     const lines = text.split('\n');
     const msgs = [];
-    const entry = { mtime: f.stat.mtime, src, file: f, msgs, todos: [] };
+    const entry = { mtime: f.stat.mtime, src, file: f, msgs, todos: [], plans: [] };
 
     if (src === 'kakao') {
       entry.room = String(fm.room || f.parent?.name || f.basename.replace(/ \d{4}-\d{2}$/, ''));
@@ -103,6 +104,8 @@ class Index {
         if (sec === '요약') {
           const td = TODO_RE.exec(l);
           if (td) entry.todos.push({ done: td[1] !== ' ', text: td[2].trim(), line: i });
+          const pl = CALL_PLAN_RE.exec(l);
+          if (pl) entry.plans.push({ date: pl[1], time: pl[2] ? pl[2].padStart(5, '0') : '', text: pl[3].trim(), line: i });
           const t = l.replace(/^\s*[-*]\s+/, '').replace(/^\[[ xX]\]\s*/, '').trim();
           if (t && t !== '(요약 없음)') msgs.push({ date, time, who: '요약', text: t, lower: t.toLowerCase(), line: i, off: '' });
         } else if (sec === '전사문') {
@@ -730,9 +733,17 @@ const DATE_RE = /^(음력\s*)?(?:(\d{4})[-.\/])?(\d{1,2})[-.\/](\d{1,2})$/;
 const LINE_RE = /^\s*[-*]\s+([^|]+?)\s*\|\s*([^|]+?)\s*(?:\|\s*([^|]*?)\s*)?(?:\|\s*(.*?)\s*)?$/;
 const CONG_RE = /생일\s*(?:을\s*)?(?:축하|ㅊㅋ)|생축|해피\s*버스?데이|happy\s*birth/i;
 const THANK_RE = /고마|고맙|감사|땡큐|ㄳ|ㄱㅅ|thank/i;
-const PARENT_RE = /^(엄마|어머니|어머님|엄니|어무니|아빠|아버지|아버님|아부지|장모님?|장인어른|장인|시어머니|시아버지|시부모님?|부모님)$/;
-const GRAND_RE = /^(외?할머니|외?할아버지)$/;
-const FAMILY = new Set(['부모', '조부모', '가족', '배우자', '남편', '아내', '자녀', '아들', '딸', '형제', '자매', '형', '오빠', '누나', '언니', '동생', '처가', '시댁']);
+// 관계별로 챙길 날: 대화에서 올해 이미 이야기했거나, 2해 이상 그 사람과 그 무렵 연락(언급·통화)한 경우에만
+const HOLIDAYS = [
+  { label: '어버이날', m: 5, d: 8, lunar: false, kw: /어버이날|카네이션/ },
+  { label: '스승의 날', m: 5, d: 15, lunar: false, kw: /스승의\s*날/ },
+  { label: '어린이날', m: 5, d: 5, lunar: false, kw: /어린이날/ },
+  { label: '설날', m: 1, d: 1, lunar: true, kw: /설날|설\s*연휴|세배|떡국|새해\s*복|명절/ },
+  { label: '추석', m: 8, d: 15, lunar: true, kw: /추석|송편|한가위|성묘|명절/ },
+];
+// 대화 속 일정: 날짜 표현 + 약속 말이 함께 있는 메시지
+const PLAN_KW = /보자|봐요|봬요|뵐게|뵙|볼까|만나|만날|약속|예약|미팅|회의|모임|방문|가자|갈게|올게|오기로|가기로|하기로|출발|픽업|데리러|식사|점심|저녁\s*먹|밥\s*먹|일정|잡자|잡을게|진료|병원|시술|상담|면접|수업|레슨/;
+const WD = '일월화수목금토';
 const AHEAD = 400;
 const LUNAR = (() => { try { return new Intl.DateTimeFormat('ko-KR-u-ca-chinese', { month: 'numeric', day: 'numeric' }); } catch (e) { return null; } })();
 
@@ -768,11 +779,54 @@ function parseDate(v) {
   return k ? { lunar: !!k[1], year: k[2] ? Number(k[2]) : 0, m: Number(k[3]), d: Number(k[4]) } : null;
 }
 function mdText(e) { return `${e.lunar ? '음력 ' : ''}${e.m}월 ${e.d}일`; }
-function relationOf(name, rel) {
-  if (rel) return rel;
-  if (PARENT_RE.test(name)) return '부모';
-  if (GRAND_RE.test(name)) return '조부모';
-  return '';
+function addDays(d, n) { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return ymd(x); }
+function validYmd(y, m, d) { const x = new Date(y, m - 1, d, 12); return x.getMonth() === m - 1 && x.getDate() === d ? ymd(x) : ''; }
+// 메시지 한 줄에서 날짜·시각 (base: 메시지를 보낸 날)
+function planWhen(text, base) {
+  const by = Number(base.slice(0, 4));
+  let date = '', k;
+  if ((k = /(?:(\d{4})년\s*)?(\d{1,2})월\s*(\d{1,2})일/.exec(text))) {
+    date = validYmd(k[1] ? Number(k[1]) : by, Number(k[2]), Number(k[3]));
+    if (date && !k[1] && date < base) date = validYmd(by + 1, Number(k[2]), Number(k[3]));
+  } else if ((k = /(?<![\d.\/:])(\d{1,2})\/(\d{1,2})(?![\d\/])/.exec(text))) {
+    date = validYmd(by, Number(k[1]), Number(k[2]));
+    if (date && date < base) date = validYmd(by + 1, Number(k[1]), Number(k[2]));
+  } else if ((k = /(오늘|내일|낼|모레|글피)/.exec(text))) {
+    date = addDays(base, { 오늘: 0, 내일: 1, 낼: 1, 모레: 2, 글피: 3 }[k[1]]);
+  } else if ((k = /(이번\s*주|다다음\s*주|다음\s*주|담주)?\s*([월화수목금토일])요일/.exec(text))) {
+    const b = new Date(base + 'T12:00:00').getDay(), t = WD.indexOf(k[2]);
+    const mon = addDays(base, -((b + 6) % 7));            // 이번 주 월요일
+    const off = (t + 6) % 7;                               // 월=0 … 일=6
+    const w = (k[1] || '').replace(/\s/g, '');
+    if (w === '이번주') date = addDays(mon, off);
+    else if (w === '다음주' || w === '담주') date = addDays(mon, 7 + off);
+    else if (w === '다다음주') date = addDays(mon, 14 + off);
+    else { let n = (t - b + 7) % 7; if (n === 0) n = 7; date = addDays(base, n); }
+  }
+  if (!date) return null;
+  let time = '';
+  if ((k = /(오전|오후|아침|점심|저녁|밤|새벽|낮)?\s*(\d{1,2})\s*시(?!간|쯤에?\s*끝)\s*(?:(\d{1,2})\s*분|(반))?/.exec(text))) {
+    let h = Number(k[2]); const mm = k[3] ? Number(k[3]) : k[4] ? 30 : 0;
+    if (/오후|저녁|밤/.test(k[1] || '') && h < 12) h += 12;
+    else if (/점심|낮/.test(k[1] || '') && h <= 5) h += 12;
+    else if (!k[1] && h >= 1 && h <= 7) h += 12;
+    if (h <= 24 && mm < 60) time = `${pad(h % 24)}:${pad(mm)}`;
+  } else if ((k = /(?<!\d)(\d{1,2}):(\d{2})(?!\d)/.exec(text))) {
+    if (Number(k[1]) < 24 && Number(k[2]) < 60) time = `${pad(Number(k[1]))}:${k[2]}`;
+  }
+  return { date, time };
+}
+// 그해의 음력 날짜 → 양력 (명절 근거 찾기용)
+const LUNAR_YEAR = new Map();
+function lunarIn(year, m, d) {
+  const key = `${year}`;
+  if (!LUNAR_YEAR.has(key)) {
+    const map = new Map();
+    const x = new Date(year, 0, 1, 12);
+    while (x.getFullYear() === year) { const l = lunarOf(x); if (l && !l.leap) { const k2 = `${l.m}-${l.d}`; if (!map.has(k2)) map.set(k2, ymd(x)); } x.setDate(x.getDate() + 1); }
+    LUNAR_YEAR.set(key, map);
+  }
+  return LUNAR_YEAR.get(key).get(`${m}-${d}`) || '';
 }
 
 class Days {
@@ -781,7 +835,7 @@ class Days {
 
   // 노트·연락처 속성에서 사람별 관계와 날짜를 모은다
   async load() {
-    const rel = new Map(), dated = [], dismissed = new Set();
+    const dated = [], dismissed = new Set();
     const f = this.app.vault.getAbstractFileByPath(this.notePath);
     if (f instanceof TFile) {
       const text = await this.app.vault.cachedRead(f);
@@ -792,8 +846,7 @@ class Days {
         const k = LINE_RE.exec(l);
         if (!k) return;
         const [, name, kind, val = '', memo = ''] = k;
-        if (kind === '관계') rel.set(name, val);
-        else if (kind === '무시') dismissed.add(`${name}|${val || '생일'}`);
+        if (kind === '무시') dismissed.add(`${name}|${val || '생일'}`);
         else { const p = parseDate(val); if (p) dated.push({ name, label: kind, memo, line, ...p }); }
       });
     }
@@ -803,13 +856,12 @@ class Days {
       if (!fm) continue;
       const nm = String(fm.name || '').trim();
       const name = nm && nm !== '정보 없음' ? nm : String(fm.phone || c.basename);
-      if (fm.relation && !rel.has(name)) rel.set(name, String(fm.relation));
       for (const [key, label] of [['birthday', '생일'], ['anniversary', '기념일']]) {
         const p = parseDate(fm[key]);
         if (p && !dated.some((x) => x.name === name && x.label === label)) dated.push({ name, label, memo: '', ...p, file: c });
       }
     }
-    return { rel, dated, dismissed };
+    return { dated, dismissed };
   }
 
   // 카톡에서 생일 후보: 1:1 방에서 내가 "생일 축하"한 날, 단체방에서 이름을 불러 축하하거나 축하받고 고마워한 사람
@@ -860,10 +912,57 @@ class Days {
     return out.sort((a, b) => b.years - a.years || b.last.localeCompare(a.last));
   }
 
+  // 명절·기념일마다 근거가 있는 방·사람: {name: {years:Set, planned}}
+  holidayWho(h, next) {
+    const who = new Map();
+    const files = [...this.plugin.index.files.values()];
+    let first = today();
+    for (const c of files) { const d = c.call ? c.call.date : c.msgs[0]?.date; if (d && d < first) first = d; }
+    const occ = [];
+    for (let y = Number(first.slice(0, 4)); y <= Number(today().slice(0, 4)); y++) {
+      const d = h.lunar ? lunarIn(y, h.m, h.d) : validYmd(y, h.m, h.d);
+      if (d && d < today()) occ.push(d);
+    }
+    const hit = (name, key, val) => { const e = who.get(name) || { years: new Set(), planned: false }; if (key === 'y') e.years.add(val); else e.planned = true; who.set(name, e); };
+    for (const c of files) {
+      if (c.kind === '단체' && new Set(c.msgs.map((m) => m.who)).size > 8) continue;
+      for (const o of occ) {
+        const lo = addDays(o, -10), hi = addDays(o, 2);
+        if (c.call) { if (c.call.date >= addDays(o, -1) && c.call.date <= addDays(o, 1)) hit(c.room, 'y', o.slice(0, 4)); }
+        if (c.msgs.some((m) => m.date >= lo && m.date <= hi && h.kw.test(m.text))) hit(c.room, 'y', o.slice(0, 4));
+      }
+      // 올해 그날을 앞두고 이미 이야기한 경우
+      if (next && c.msgs.some((m) => m.date >= addDays(next.date, -40) && m.date <= today() && h.kw.test(m.text))) hit(c.room, 'p');
+    }
+    return [...who].filter(([, e]) => e.years.size >= 2 || e.planned);
+  }
+
+  // 대화 속 일정 후보: 최근 60일 메시지에서, 오늘~180일 뒤의 날짜
+  plans() {
+    const td = today(), from = addDays(td, -60), until = addDays(td, 180), out = new Map();
+    for (const c of this.plugin.index.files.values()) {
+      for (const p of c.plans || []) {
+        if (p.date < td || p.date > until) continue;
+        const key = `call|${c.room}|${p.date}|${p.time}`;
+        out.set(key, { id: 'plan:' + key, date: p.date, time: p.time, room: c.room, src: 'call', text: p.text, file: c.file, line: p.line, said: c.call.date });
+      }
+      if (c.src !== 'kakao') continue;
+      for (const m of c.msgs) {
+        if (m.date < from || !PLAN_KW.test(m.text)) continue;
+        const w = planWhen(m.text, m.date);
+        if (!w || w.date < td || w.date > until) continue;
+        const key = `kakao|${c.room}|${w.date}|${w.time}`;
+        const prev = out.get(key);
+        if (!prev || `${m.date} ${m.time}` > prev.said) out.set(key, { id: 'plan:' + key, ...w, room: c.room, src: 'kakao', who: m.who, text: m.text, file: c.file, line: m.line, said: `${m.date} ${m.time}` });
+      }
+    }
+    return [...out.values()].sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+  }
+
   // 다가오는 날 목록 [{date, dday, title, label, names[], kind, guess?}]
   async upcoming() {
     await this.plugin.index.ensure();
-    const { rel, dated, dismissed } = await this.load();
+    const { dated, dismissed } = await this.load();
     const ev = [];
     const push = (hit, o) => { if (hit) ev.push({ date: hit.date, dday: hit.i, ...o }); };
     for (const e of dated) {
@@ -872,21 +971,15 @@ class Days {
       if (e.year && e.label !== '생일' && hit) { const n = Number(hit.date.slice(0, 4)) - e.year; if (n > 0) label += ` ${n}주년`; }
       push(hit, { title: `${e.name} ${label}`, label, names: [e.name], kind: e.label === '생일' ? 'birth' : 'anniv', sub: mdText(e) + (e.memo ? ` · ${e.memo}` : '') });
     }
-    // 관계: 저장된 것 + 이름으로 알 수 있는 것(엄마, 아빠 …)
-    const rels = new Map(rel);
-    for (const r of this.plugin.index.rooms()) { const x = relationOf(r.name, rels.get(r.name)); if (x) rels.set(r.name, x); }
-    const of = (pred) => [...rels].filter(([, r]) => pred(r)).map(([n]) => n);
-    const parents = of((r) => r === '부모' || r === '조부모' || /어버이|부모/.test(r));
-    const family = of((r) => FAMILY.has(r) || /가족|부모/.test(r));
-    const teachers = of((r) => /스승|선생|은사/.test(r));
-    const kids = of((r) => /자녀|아들|딸|아이/.test(r));
-    const list = (ns) => ns.slice(0, 4).join(', ') + (ns.length > 4 ? ` 외 ${ns.length - 4}명` : '');
-    if (parents.length) push(nextOf(5, 8, false), { title: '어버이날', label: '어버이날', names: parents, kind: 'holiday', sub: list(parents) });
-    if (teachers.length) push(nextOf(5, 15, false), { title: '스승의 날', label: '스승의 날', names: teachers, kind: 'holiday', sub: list(teachers) });
-    if (kids.length) push(nextOf(5, 5, false), { title: '어린이날', label: '어린이날', names: kids, kind: 'holiday', sub: list(kids) });
-    if (family.length && LUNAR) {
-      push(nextOf(1, 1, true), { title: '설날', label: '설날', names: family, kind: 'holiday', sub: '음력 1월 1일 · ' + list(family) });
-      push(nextOf(8, 15, true), { title: '추석', label: '추석', names: family, kind: 'holiday', sub: '음력 8월 15일 · ' + list(family) });
+    // 관계별로 챙길 날 (근거 있는 사람·방만)
+    for (const h of HOLIDAYS) {
+      if (h.lunar && !LUNAR) continue;
+      const next = nextOf(h.m, h.d, h.lunar);
+      const who = this.holidayWho(h, next);
+      if (!who.length) continue;
+      const names = who.map(([n]) => n);
+      const why = who.slice(0, 4).map(([n, e]) => `${n}(${e.planned ? '대화에서 이야기함' : e.years.size + '해째'})`).join(', ') + (who.length > 4 ? ` 외 ${who.length - 4}` : '');
+      push(next, { title: h.label, label: h.label, names, kind: 'holiday', sub: (h.lunar ? `음력 ${h.m}월 ${h.d}일 · ` : '') + why });
     }
     // 카톡에서 찾은 생일 후보 (저장·무시하지 않은 것)
     const saved = new Set(dated.filter((e) => e.label === '생일').map((e) => e.name));
@@ -894,7 +987,9 @@ class Days {
     for (const g of guesses) push(nextOf(g.m, g.d, g.lunar), { title: `${g.name} 생일`, label: '생일', names: [g.name], kind: 'birth', guess: g, sub: mdText(g) + ' · 카톡에서 추정' });
     ev.sort((a, b) => a.dday - b.dday || a.title.localeCompare(b.title, 'ko'));
     this.writeOut(ev);
-    return { ev, guesses, rels };
+    const plans = this.plans();
+    this.writeCal(ev, plans);
+    return { ev, guesses, plans };
   }
 
   // 메뉴막대 앱이 읽어 맥 알림을 띄우는 파일 (확정된 날만)
@@ -905,6 +1000,32 @@ class Days {
       const p = `${this.plugin.manifest.dir}/upcoming.json`;
       if (this.lastOut !== s) { await this.app.vault.adapter.write(p, s); this.lastOut = s; }
     } catch (e) { console.warn('Rappo: upcoming.json', e); }
+  }
+
+  // 메뉴막대 앱이 읽어 캘린더에 넣는 파일: 확정된 챙길 날(60일 안) + 넣기로 한 대화 일정
+  async writeCal(ev, plans) {
+    try {
+      const st = this.plugin.data.plans || {};
+      const auto = !!this.plugin.data.autoPlan;
+      const events = ev.filter((e) => !e.guess && e.dday <= 60).map((e) => ({ id: `day:${e.title}:${e.date}`, title: (e.kind === 'birth' ? '🎂 ' : e.kind === 'anniv' ? '💐 ' : '🗓 ') + e.title, date: e.date, time: '', notes: e.sub || '' }));
+      for (const p of plans) {
+        const s0 = st[p.id];
+        if (s0 === 'no' || (!s0 && !(auto && p.time))) continue;
+        events.push({ id: p.id, title: `${p.room} · ${clean(p.text).slice(0, 40)}`, date: p.date, time: p.time,
+          notes: `${p.src === 'call' ? '통화' : '카톡'} ${p.room} (${p.said})\n${p.who ? p.who + ': ' : ''}${clean(p.text)}` });
+      }
+      const s = JSON.stringify({ made: today(), events }, null, 1);
+      if (this.lastCal !== s) { await this.app.vault.adapter.write(`${this.plugin.manifest.dir}/calendar.json`, s); this.lastCal = s; }
+    } catch (e) { console.warn('Rappo: calendar.json', e); }
+  }
+  // 앱이 캘린더에 넣은 것 {calendar, ids[]}
+  async calDone() {
+    try { return JSON.parse(await this.app.vault.adapter.read(`${this.plugin.manifest.dir}/calendar-done.json`)); } catch (e) { return null; }
+  }
+  async setPlan(id, v) {
+    this.plugin.data.plans = this.plugin.data.plans || {};
+    this.plugin.data.plans[id] = v;
+    await this.plugin.saveData(this.plugin.data);
   }
 
   async append(line) {
@@ -927,11 +1048,9 @@ tags: [대시보드]
 
 Rappo 대시보드의 **챙길 날**과 맥 알림이 이 목록을 읽어요. 한 줄에 하나씩 \`- 이름 | 종류 | 날짜(또는 관계)\` 로 적어요.
 - 날짜: \`05-03\`, \`음력 03-15\`, 연도를 넣으면 기념일은 몇 주년인지도 보여요 (\`2020-10-03\`).
-- 관계: \`부모\`·\`조부모\` → 어버이날, 가족(부모·배우자·형제·자녀 …) → 설·추석, \`스승\` → 스승의 날, \`자녀\` → 어린이날.
-  엄마·아빠·할머니처럼 이름이 관계면 따로 적지 않아도 돼요.
+- 어버이날·설·추석 같은 날은 따로 적지 않아도 돼요. 올해 대화에서 이미 이야기했거나, 2해 이상 그 무렵 그 사람과 연락(이야기·통화)했으면 자동으로 나타나요.
 
 예)
-- 엄마 | 관계 | 부모
 - 엄마 | 생일 | 음력 03-15
 - 홍길동 | 결혼기념일 | 2020-10-03 | 꽃 준비
 
@@ -945,8 +1064,10 @@ class DaysView {
     r.empty();
     r.addClass('ks-root');
     const status = r.createDiv({ cls: 'ks-status', text: '챙길 날 찾는 중…' });
-    const { ev, guesses } = await this.plugin.days.upcoming();
+    const { ev, guesses, plans } = await this.plugin.days.upcoming();
+    const done = await this.plugin.days.calDone();
     status.remove();
+    this.planSection(r, plans, done);
     const bar = r.createDiv({ cls: 'ks-recent-bar' });
     const seg = bar.createDiv({ cls: 'ks-seg' });
     for (const [v, label] of [[30, '30일'], [60, '60일'], [AHEAD, '1년']]) {
@@ -956,7 +1077,7 @@ class DaysView {
     }
     const add = bar.createEl('button', { text: '✏️ 날짜·관계 적기' });
     add.onclick = () => this.plugin.days.openNote();
-    bar.createSpan({ cls: 'ks-muted', text: '7일·3일·1일 전과 당일에 맥 알림으로 알려 줘요.' });
+    bar.createSpan({ cls: 'ks-muted', text: '7일·3일·1일 전과 당일에 맥 알림으로 알려 주고, 60일 안의 날은 캘린더에도 넣어요.' });
     const list = ev.filter((e) => e.dday <= this.range);
     if (!list.length) r.createDiv({ cls: 'ks-hint', text: `앞으로 ${this.range === AHEAD ? '1년' : this.range + '일'} 안에 챙길 날이 없어요. 생일·관계를 적으면 여기 나타나요.` });
     const box = r.createDiv({ cls: 'ks-recent' });
@@ -991,6 +1112,49 @@ class DaysView {
       }
     }
   }
+  // 📅 대화에서 정한 일정 → 캘린더
+  planSection(r, plans, done) {
+    const st = this.plugin.data.plans || {}, auto = !!this.plugin.data.autoPlan;
+    const ids = new Set(done?.ids || []);
+    const list = plans.filter((p) => st[p.id] !== 'no');
+    const sec = r.createDiv({ cls: 'ks-section is-call' });
+    const head = sec.createDiv({ cls: 'ks-recent-bar' });
+    head.createSpan({ cls: 'ks-section-title', text: `📅 대화에서 정한 일정 ${list.length}개` });
+    const lab = head.createEl('label', { cls: 'ks-check' });
+    const cb = lab.createEl('input', { type: 'checkbox' });
+    cb.checked = auto;
+    lab.appendText(' 시각까지 정해진 일정은 자동으로 캘린더에');
+    cb.onchange = async () => { this.plugin.data.autoPlan = cb.checked; await this.plugin.saveData(this.plugin.data); this.render(); };
+    head.createSpan({ cls: 'ks-muted', text: done?.calendar ? `→ ${done.calendar}` : '→ Rappo 설정 › AI·캘린더에서 캘린더를 골라 주세요' });
+    if (!list.length) { sec.createDiv({ cls: 'ks-hint', text: '최근 60일 대화에서 앞으로의 약속을 찾지 못했어요.' }); return; }
+    for (const p of list.slice(0, this.planShown || 10)) {
+      const row = sec.createDiv({ cls: 'ks-day-row' });
+      const dd = daysSince(p.date) * -1;
+      row.createSpan({ cls: 'ks-dday' + (dd <= 7 ? ' is-soon' : ''), text: dd === 0 ? '오늘' : `D-${dd}` });
+      const body = row.createDiv({ cls: 'ks-todo-body' });
+      const t = body.createDiv({ cls: 'ks-todo-text', text: `${p.date.slice(5).replace('-', '/')} (${weekday(p.date)})${p.time ? ' ' + p.time : ''} · ${p.room}  ` });
+      t.createSpan({ cls: 'ks-muted', text: p.src === 'call' ? '📞 통화 요약' : '💬 카톡' });
+      const q = body.createEl('a', { cls: 'ks-muted', text: `${p.who ? p.who + ': ' : ''}${clean(p.text)}` });
+      q.onclick = () => this.app.workspace.getLeaf(false).openFile(p.file, { eState: { line: p.line } });
+      const btns = body.createDiv({ cls: 'ks-guess-btns' });
+      const inCal = ids.has(p.id), want = st[p.id] === 'add' || (auto && p.time);
+      if (inCal) btns.createSpan({ cls: 'ks-muted', text: '✅ 캘린더에 들어감' });
+      else if (want) btns.createSpan({ cls: 'ks-muted', text: '⏳ 캘린더에 넣는 중 (Rappo 앱)' });
+      else {
+        const add = btns.createEl('button', { text: '📅 캘린더에 넣기' });
+        add.onclick = async () => { await this.plugin.days.setPlan(p.id, 'add'); this.render(); };
+      }
+      if (!inCal) {
+        const no = btns.createEl('button', { text: '일정 아니에요' });
+        no.onclick = async () => { await this.plugin.days.setPlan(p.id, 'no'); this.render(); };
+      }
+    }
+    if (list.length > (this.planShown || 10)) {
+      const more = sec.createEl('button', { text: `더 보기 (${list.length - (this.planShown || 10)}개)`, cls: 'ks-more' });
+      more.onclick = () => { this.planShown = (this.planShown || 10) + 10; this.render(); };
+    }
+  }
+
   guessButtons(parent, g) {
     const btns = parent.createDiv({ cls: 'ks-guess-btns' });
     const save = btns.createEl('button', { text: '맞아요, 저장' });
@@ -1008,6 +1172,7 @@ class DaysChild extends MarkdownRenderChild {
 module.exports = class RappoSearch extends Plugin {
   async onload() {
     const data = (await this.loadData()) || {};
+    this.data = data;
     const base = String(data.base || '2. Areas/통화기록').replace(/\/+$/, '');
     BASE = base; CONTACTS = base + '/연락처'; KAKAO = base + '/카톡'; CALLS = base + '/통화';
     this.index = new Index(this.app);

@@ -255,17 +255,60 @@ def transcribe(path: Path, other: str = "상대") -> list[dict]:
     return [ln for ln in lines if ln["text"]]
 
 
-def summarize(transcript: str) -> str:
-    """claude CLI가 있으면 요약. 실패하면 빈 문자열."""
-    if not shutil.which("claude") or len(transcript) < 30:
-        return ""
-    prompt = (
+AI = os.environ.get("RAPPO_AI", "auto").strip() or "auto"          # auto | local | claude
+AI_MODEL = os.environ.get("RAPPO_AI_MODEL", "qwen3.5:4b").strip() or "qwen3.5:4b"
+OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+WEEK = "월화수목금토일"
+
+
+def _prompt(transcript: str, when: datetime | None) -> str:
+    base = f"통화 날짜: {when:%Y-%m-%d} ({WEEK[when.weekday()]}요일)\n" if when else ""
+    return (
+        base +
         "아래는 전화 통화 녹취를 음성인식한 전사문이야(오인식이 있을 수 있음). "
         "통화 기록용으로 한국어 마크다운으로만 답해. 형식:\n"
         "한 줄 요약\n\n- 핵심 내용 불릿 2~5개\n\n할 일이 있으면 '- [ ] ' 체크박스로, 없으면 생략.\n"
+        "만나기로 하거나 약속·예약·방문처럼 날짜가 정해진 일정이 있으면 통화 날짜 기준으로 날짜를 계산해 "
+        "'- 📅 YYYY-MM-DD HH:MM 내용' (시각을 모르면 'YYYY-MM-DD 내용') 형식으로, 없으면 생략.\n"
         "머리말·인사·제목 없이 바로 시작.\n\n---\n" + transcript
     )
+
+
+def _ollama_up() -> bool:
+    import urllib.request
     try:
+        with urllib.request.urlopen(OLLAMA + "/api/tags", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _ollama(prompt: str) -> str:
+    """로컬 모델(Ollama)로 요약. 생각 모드는 끈다."""
+    import json, urllib.request
+    body = json.dumps({"model": AI_MODEL, "prompt": prompt, "stream": False, "think": False,
+                       "options": {"temperature": 0.2, "num_ctx": 8192}}).encode()
+    req = urllib.request.Request(OLLAMA + "/api/generate", data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=600) as r:
+        out = json.loads(r.read().decode()).get("response", "")
+    return re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
+
+
+def summarize(transcript: str, when: datetime | None = None) -> str:
+    """요약: 로컬 모델(Ollama, 기본 qwen3.5:4b) 또는 claude CLI. 실패하면 빈 문자열.
+    RAPPO_AI=auto 면 Ollama 가 켜져 있을 때 로컬, 아니면 claude."""
+    if len(transcript) < 30:
+        return ""
+    prompt = _prompt(transcript, when)
+    use_local = AI == "local" or (AI == "auto" and _ollama_up())
+    try:
+        if use_local:
+            out = _ollama(prompt)
+            if not out:
+                print("     ! 요약 실패: 로컬 모델 응답 없음", file=sys.stderr)
+            return out
+        if not shutil.which("claude"):
+            return ""
         r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=180)
         out = r.stdout.strip()
         if r.returncode != 0 or not out or out.startswith(("Failed to authenticate", "Error", "Invalid API key")):
@@ -273,7 +316,7 @@ def summarize(transcript: str) -> str:
             return ""
         return out
     except Exception as e:
-        print(f"     ! 요약 실패: {e}", file=sys.stderr)
+        print(f"     ! 요약 실패 ({'로컬 ' + AI_MODEL if use_local else 'claude'}): {e}", file=sys.stderr)
         return ""
 
 
@@ -286,7 +329,12 @@ def resummarize(call_dir: Path, cdir: Path):
         t = p.read_text(encoding="utf-8")
         body = t.split("## 전사문\n", 1)[-1]
         transcript = re.sub(r"^`\d+:\d+` ", "", body, flags=re.M).replace("**", "")
-        summary = summarize(transcript)
+        fm = read_fm(p)
+        try:
+            when = datetime.fromisoformat(str(fm.get("datetime", ""))[:16])
+        except ValueError:
+            when = None
+        summary = summarize(transcript, when)
         if not summary:
             continue
         first = summary.splitlines()[0].strip("# ").strip()
@@ -508,7 +556,7 @@ def main():
     ap = argparse.ArgumentParser(description="녹취 → 옵시디언 통화 기록")
     ap.add_argument("--src", type=Path, default=RECORD_DIR)
     ap.add_argument("--vault", type=Path, default=VAULT)
-    ap.add_argument("--no-summary", action="store_true", help="Claude 요약 생략")
+    ap.add_argument("--no-summary", action="store_true", help="통화 요약 생략")
     ap.add_argument("--limit", type=int, default=0, help="이번에 처리할 최대 개수")
     ap.add_argument("--resummarize", action="store_true", help="요약이 비어 있는 통화 노트만 요약 채우기")
     ap.add_argument("--kakao-src", type=Path, default=KAKAO_DIR)
@@ -574,7 +622,7 @@ def main():
         dur = duration_sec(info["path"])
         segs = transcribe(info["path"], other=name or "상대")
         summary = "" if a.no_summary else summarize("\n".join(
-            (f"{s['speaker']}: " if s["speaker"] else "") + s["text"] for s in segs))
+            (f"{s['speaker']}: " if s["speaker"] else "") + s["text"] for s in segs), info["dt"])
         out = write_call(call_dir, info, display, contact, segs, summary, dur)
         print(f"     ✓ {out.relative_to(a.vault)}", flush=True)
         touched.add((contact, info["phone"]))

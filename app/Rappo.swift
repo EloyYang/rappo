@@ -6,6 +6,7 @@
 import Cocoa
 import ServiceManagement
 import UniformTypeIdentifiers
+import EventKit
 
 let kakaoDBDir = NSHomeDirectory() + "/Library/Containers/com.kakao.KakaoTalkMac/Data/Library/Application Support/com.kakao.KakaoTalkMac"
 
@@ -60,6 +61,12 @@ final class Settings {
     var minGapMin: Int { get { max(0, d.integer(forKey: "minGapMin")) } set { d.set(newValue, forKey: "minGapMin") } }
     var summary: Bool { get { d.bool(forKey: "summary") } set { d.set(newValue, forKey: "summary") } }
     var kakaoOn: Bool { get { d.bool(forKey: "kakaoOn") } set { d.set(newValue, forKey: "kakaoOn") } }
+    // 요약 AI: 0 자동(로컬 모델이 켜져 있으면 로컬) · 1 로컬(Ollama) · 2 Claude Code
+    var aiEngine: Int { get { d.integer(forKey: "aiEngine") } set { d.set(newValue, forKey: "aiEngine") } }
+    var aiModel: String { get { (d.string(forKey: "aiModel") ?? "").isEmpty ? "qwen3.5:4b" : d.string(forKey: "aiModel")! } set { d.set(newValue, forKey: "aiModel") } }
+    // 캘린더: 챙길 날·대화 일정을 넣을 캘린더 (EventKit — 맥 캘린더에 연결된 구글 캘린더 포함)
+    var calOn: Bool { get { d.bool(forKey: "calOn") } set { d.set(newValue, forKey: "calOn") } }
+    var calId: String { get { d.string(forKey: "calId") ?? "" } set { d.set(newValue, forKey: "calId") } }
     // 이 시각(통화 시각) 이전 녹취는 건너뜀. "yyyy-MM-dd HH:mm", 비우면 전부
     var since: String { get { d.string(forKey: "since") ?? "" } set { d.set(newValue, forKey: "since") } }
     var recordMode: RecordMode {
@@ -73,7 +80,7 @@ final class Settings {
         return f.string(from: Date())
     }
 
-    static let keys = ["recordDir", "vaultDir", "kakaoDir", "kakaoMe", "kakaoMode", "intervalMin", "quietSec", "minGapMin", "summary", "since", "pollMin", "recordMode", "kakaoOn"]
+    static let keys = ["recordDir", "vaultDir", "kakaoDir", "kakaoMe", "kakaoMode", "intervalMin", "quietSec", "minGapMin", "summary", "since", "pollMin", "recordMode", "kakaoOn", "aiEngine", "aiModel", "calOn", "calId"]
     // 볼트 안에서 노트를 모아 두는 폴더 (install.sh 가 config.sh 에 적음)
     var baseDir: String { let b = base["RAPPO_BASE"] ?? ""; return b.isEmpty ? "2. Areas/통화기록" : b }
 
@@ -89,6 +96,8 @@ final class Settings {
         for (k, envKey) in [("recordDir", "RECORD"), ("vaultDir", "VAULT"), ("kakaoDir", "KAKAO"), ("kakaoMe", "KAKAO_ME"), ("since", "SINCE")] {
             if let v = d.string(forKey: k), !v.isEmpty { e["APP_RAPPO_" + envKey] = v }
         }
+        e["APP_RAPPO_AI"] = ["auto", "local", "claude"][max(0, min(2, aiEngine))]
+        e["APP_RAPPO_AI_MODEL"] = aiModel
         return e
     }
 }
@@ -149,6 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pollTimer: Timer?
     var knownRecords: Set<String>? = nil   // 주기 확인용: 마지막으로 본 녹취 파일 목록
     var dayTimer: Timer?
+    let events = EKEventStore()
+    var calWatcher: Watcher?
+    var calDebounce: Timer?
     var dayItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -161,7 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.request(["--kakao-db"]) }
         // 챙길 날 알림: 시작 30초 뒤, 그다음 1시간마다 (7·3·1일 전과 당일, 한 번씩)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.checkDays() }
-        dayTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkDays() }
+        dayTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkDays(); self?.syncCalendar() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [weak self] in self?.syncCalendar() }
     }
 
     // 이미 실행 중일 때 앱을 다시 열면(Finder 더블클릭 등) 설정 창
@@ -173,6 +186,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 설정이 바뀔 때마다 감시·타이머를 다시 건다
     func applySettings() {
         watchers.removeAll()
+        // 옵시디언 플러그인이 calendar.json 을 고치면 바로 캘린더에 반영
+        calWatcher = Watcher(path: pluginDir) { [weak self] paths in
+            guard paths.contains(where: { $0.hasSuffix("calendar.json") }) else { return }
+            self?.calDebounce?.invalidate()
+            self?.calDebounce = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in self?.syncCalendar() }
+        }
         timer?.invalidate(); timer = nil
         recordDebounce?.invalidate(); kakaoDebounce?.invalidate()
         pollTimer?.invalidate()
@@ -454,6 +473,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ud.set(Array(sent), forKey: "dayNotified")
     }
 
+    // MARK: 캘린더 (calendar.json → EventKit)
+    var pluginDir: String { s.vaultDir + "/.obsidian/plugins/rappo" }
+    var calAccess: Bool {
+        let st = EKEventStore.authorizationStatus(for: .event)
+        if #available(macOS 14, *) { return st == .fullAccess }
+        return st == .authorized
+    }
+    func requestCalendar(_ done: @escaping (Bool) -> Void) {
+        let back: (Bool, Error?) -> Void = { ok, _ in DispatchQueue.main.async { done(ok) } }
+        if #available(macOS 14, *) { events.requestFullAccessToEvents(completion: back) }
+        else { events.requestAccess(to: .event, completion: back) }
+    }
+    func writableCalendars() -> [EKCalendar] {
+        guard calAccess else { return [] }
+        return events.calendars(for: .event).filter { $0.allowsContentModifications }
+            .sorted { ($0.source.title, $0.title) < ($1.source.title, $1.title) }
+    }
+    func calLabel(_ c: EKCalendar) -> String { "\(c.source.title) · \(c.title)" }
+
+    func syncCalendar() {
+        guard s.calOn, calAccess else { return }
+        events.reset()
+        guard let cal = events.calendar(withIdentifier: s.calId) ?? events.defaultCalendarForNewEvents,
+              let data = FileManager.default.contents(atPath: pluginDir + "/calendar.json"),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["events"] as? [[String: Any]] else { return }
+        let ud = UserDefaults.standard
+        var added = ud.dictionary(forKey: "calAdded") as? [String: String] ?? [:]
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        var n = 0
+        for e in list {
+            guard let id = e["id"] as? String, added[id] == nil, let title = e["title"] as? String, let ds = e["date"] as? String else { continue }
+            let time = e["time"] as? String ?? ""
+            f.dateFormat = time.isEmpty ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm"
+            guard let start = f.date(from: time.isEmpty ? ds : "\(ds) \(time)") else { continue }
+            let ev = EKEvent(eventStore: events)
+            ev.calendar = cal
+            ev.title = title
+            ev.notes = (e["notes"] as? String ?? "") + "\n\n— Rappo"
+            if time.isEmpty {
+                ev.isAllDay = true; ev.startDate = start; ev.endDate = start
+                ev.addAlarm(EKAlarm(relativeOffset: -15 * 3600))   // 전날 오전 9시
+            } else {
+                ev.startDate = start; ev.endDate = start.addingTimeInterval(3600)
+                ev.addAlarm(EKAlarm(relativeOffset: -3600))         // 1시간 전
+            }
+            do { try events.save(ev, span: .thisEvent, commit: false); added[id] = ev.eventIdentifier ?? "?"; n += 1 }
+            catch { NSLog("Rappo 캘린더 저장 실패: \(error)") }
+        }
+        if n > 0 { try? events.commit() }
+        ud.set(added, forKey: "calAdded")
+        // 플러그인이 '캘린더에 들어감'을 보여 줄 수 있게
+        let done: [String: Any] = ["calendar": calLabel(cal), "ids": Array(added.keys)]
+        if let out = try? JSONSerialization.data(withJSONObject: done, options: [.prettyPrinted]) {
+            let p = pluginDir + "/calendar-done.json"
+            if FileManager.default.contents(atPath: p) != out { try? out.write(to: URL(fileURLWithPath: p)) }
+        }
+        if n > 0 { notify("캘린더에 \(n)개 넣었어요", calLabel(cal)) }
+    }
+
+    // 로컬 모델(Ollama) 상태
+    func ollamaState(_ done: @escaping (Bool, [String]) -> Void) {
+        guard let u = URL(string: "http://127.0.0.1:11434/api/tags") else { return done(false, []) }
+        var req = URLRequest(url: u); req.timeoutInterval = 2
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            var names: [String] = []
+            if let data = data, let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let ms = o["models"] as? [[String: Any]] { names = ms.compactMap { $0["name"] as? String } }
+            DispatchQueue.main.async { done(data != nil, names) }
+        }.resume()
+    }
+
     func notify(_ title: String, _ body: String) {
         func esc(_ x: String) -> String { x.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
         let p = Process()
@@ -537,7 +628,14 @@ final class SettingsWindow: NSWindowController {
     let recordField = SettingsWindow.pathLabel()
     let skipOldCheck = NSButton(checkboxWithTitle: "이 시각 이전 녹취는 건너뛰기", target: nil, action: nil)
     let sincePicker = NSDatePicker()
-    let summaryCheck = NSButton(checkboxWithTitle: "통화 요약 만들기 (Claude Code 필요)", target: nil, action: nil)
+    let summaryCheck = NSButton(checkboxWithTitle: "통화 요약 만들기 (요약 · 할 일 · 정한 일정)", target: nil, action: nil)
+    // AI·캘린더
+    let aiPopup = NSPopUpButton()
+    let modelField = NSTextField()
+    let aiState = SettingsWindow.note("")
+    let calCheck = NSButton(checkboxWithTitle: "챙길 날과 대화에서 정한 일정을 캘린더에 넣기", target: nil, action: nil)
+    let calPopup = NSPopUpButton()
+    let calState = SettingsWindow.note("")
     let vaultField = SettingsWindow.pathLabel()
     let obsidianState = SettingsWindow.note("")
     let loginCheck = NSButton(checkboxWithTitle: "로그인하면 Rappo 자동 실행", target: nil, action: nil)
@@ -625,7 +723,14 @@ final class SettingsWindow: NSWindowController {
 
     // MARK: 화면
     func build() {
-        for c in [skipOldCheck, summaryCheck, loginCheck, kakaoCheck] { c.target = self; c.action = #selector(changed) }
+        for c in [skipOldCheck, summaryCheck, loginCheck, kakaoCheck, calCheck] { c.target = self; c.action = #selector(changed) }
+        aiPopup.addItems(withTitles: ["자동 (로컬 모델이 켜져 있으면 로컬)", "로컬 모델 (Ollama)", "Claude Code"])
+        aiPopup.target = self; aiPopup.action = #selector(changed)
+        modelField.placeholderString = "qwen3.5:4b"
+        modelField.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        modelField.target = self; modelField.action = #selector(changed)
+        calPopup.target = self; calPopup.action = #selector(changed)
+        calPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
         sincePicker.datePickerStyle = .textFieldAndStepper
         sincePicker.datePickerElements = [.yearMonthDay, .hourMinute]
         sincePicker.target = self; sincePicker.action = #selector(changed)
@@ -642,7 +747,6 @@ final class SettingsWindow: NSWindowController {
             header("녹취"),
             row([NSTextField(labelWithString: "폴더"), recordField, button("변경…", #selector(pickRecord)), button("열기", #selector(openRecord))]),
             row([skipOldCheck, sincePicker]),
-            summaryCheck,
             gap(),
             header("옵시디언"),
             row([NSTextField(labelWithString: "볼트"), vaultField, button("변경…", #selector(pickVault))]),
@@ -664,6 +768,20 @@ final class SettingsWindow: NSWindowController {
             row([NSTextField(labelWithString: "내 카톡 이름"), meField]),
             SettingsWindow.note("대화에서 ‘나’로 표시할 이름이에요. 보통은 비워 두면 돼요."),
         ])
+        let ai = page([
+            header("통화 요약 AI"),
+            summaryCheck,
+            row([NSTextField(labelWithString: "사용할 AI"), aiPopup]),
+            row([NSTextField(labelWithString: "로컬 모델"), modelField, button("빈 요약 채우기", #selector(resummarize))]),
+            aiState,
+            SettingsWindow.note("로컬 모델은 이 맥 안에서만 돌아서 통화 내용이 밖으로 나가지 않아요. 메모리 8GB 맥은 qwen3.5:4b 를 권해요."),
+            gap(),
+            header("캘린더"),
+            calCheck,
+            row([NSTextField(labelWithString: "넣을 캘린더"), calPopup, button("접근 허용", #selector(allowCalendar))]),
+            calState,
+            SettingsWindow.note("구글 캘린더는 시스템 설정 › 인터넷 계정에 Google 계정을 추가하면 여기 목록에 나타나요. 넣은 일정은 구글 캘린더와 폰에도 동기화돼요."),
+        ])
         let tools = page([
             header("도구"),
             row([button("지금 정리하기", #selector(runNow)), button("빈 요약 채우기", #selector(resummarize)), button("로그 보기", #selector(openLog))]),
@@ -683,7 +801,7 @@ final class SettingsWindow: NSWindowController {
         ])
 
         let tabs = NSTabView()
-        for (t, v) in [("일반", general), ("카카오톡", kakao), ("고급", tools)] {
+        for (t, v) in [("일반", general), ("카카오톡", kakao), ("AI·캘린더", ai), ("고급", tools)] {
             let it = NSTabViewItem(identifier: t); it.label = t; it.view = v; tabs.addTabViewItem(it)
         }
         tabs.translatesAutoresizingMaskIntoConstraints = false
@@ -716,7 +834,30 @@ final class SettingsWindow: NSWindowController {
         meField.stringValue = s.kakaoMe
         recordPopup.selectItem(at: s.recordMode.rawValue)
         pollField.integerValue = s.pollMin
+        aiPopup.selectItem(at: s.aiEngine)
+        modelField.stringValue = s.aiModel
+        calCheck.state = s.calOn ? .on : .off
+        fillCalendars()
         refreshStatus()
+    }
+
+    func fillCalendars() {
+        calPopup.removeAllItems()
+        let cals = app?.writableCalendars() ?? []
+        if cals.isEmpty { calPopup.addItem(withTitle: "(접근 허용을 눌러 주세요)"); calPopup.isEnabled = false; return }
+        calPopup.isEnabled = true
+        for c in cals { calPopup.addItem(withTitle: app!.calLabel(c)); calPopup.lastItem?.representedObject = c.calendarIdentifier }
+        if let i = cals.firstIndex(where: { $0.calendarIdentifier == s.calId }) { calPopup.selectItem(at: i) }
+        else if let g = cals.firstIndex(where: { $0.source.title.localizedCaseInsensitiveContains("google") || $0.source.title.contains("@gmail") }) {
+            calPopup.selectItem(at: g); s.calId = cals[g].calendarIdentifier
+        } else { s.calId = cals[0].calendarIdentifier }
+    }
+    @objc func allowCalendar() {
+        app?.requestCalendar { [weak self] ok in
+            guard let self = self else { return }
+            if ok { self.s.calOn = true; self.load(); self.app?.syncCalendar() }
+            else { self.app?.alert("캘린더 접근이 막혀 있어요", "시스템 설정 › 개인정보 보호 및 보안 › 캘린더에서 Rappo 를 켜 주세요."); self.refreshStatus() }
+        }
     }
 
     // 상태 표시 (권한·로그인·옵시디언·감시 방식)
@@ -737,6 +878,16 @@ final class SettingsWindow: NSWindowController {
         intervalField.isEnabled = k && s.kakaoMode != .change
         pollField.isEnabled = s.recordMode != .change
         sincePicker.isEnabled = skipOldCheck.state == .on
+        let access = app.calAccess
+        calState.stringValue = !access ? "⚠️ 캘린더 접근을 허용해 주세요." : !s.calOn ? "꺼져 있어요." :
+            "✅ 켜짐 · 지금까지 \((UserDefaults.standard.dictionary(forKey: "calAdded") ?? [:]).count)개 넣음"
+        aiState.stringValue = "로컬 모델 확인 중…"
+        let model = s.aiModel
+        app.ollamaState { [weak self] up, names in
+            self?.aiState.stringValue = !up ? "⚠️ Ollama 가 꺼져 있어요. 터미널: brew install ollama && brew services start ollama && ollama pull \(model)"
+                : names.contains(where: { $0 == model || $0 == model + ":latest" }) ? "✅ 로컬 모델 준비됨 (\(model))"
+                : "⚠️ 모델이 없어요. 터미널: ollama pull \(model)"
+        }
     }
 
     // 화면 → 설정 값 (바꾸면 바로 적용)
@@ -749,6 +900,12 @@ final class SettingsWindow: NSWindowController {
         s.kakaoMe = meField.stringValue.trimmingCharacters(in: .whitespaces)
         s.recordMode = RecordMode(rawValue: recordPopup.indexOfSelectedItem) ?? .auto
         s.pollMin = max(1, pollField.integerValue)
+        s.aiEngine = aiPopup.indexOfSelectedItem
+        let m = modelField.stringValue.trimmingCharacters(in: .whitespaces)
+        s.aiModel = m.isEmpty ? "qwen3.5:4b" : m
+        s.calOn = calCheck.state == .on
+        if let id = calPopup.selectedItem?.representedObject as? String { s.calId = id }
+        if s.calOn { app?.syncCalendar() }
         if let app = app, (loginCheck.state == .on) != app.loginEnabled { app.toggleLogin() }
         app?.applySettings()
         refreshStatus()
