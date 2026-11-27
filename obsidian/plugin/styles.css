@@ -81,3 +81,12 @@ div.ks-section-head { cursor: default; }
 /* 대시보드 노트를 넓게 (cssclasses: rappo-wide) */
 .rappo-wide { --file-line-width: 100%; }
 .markdown-preview-view.rappo-wide .markdown-preview-sizer, .rappo-wide .cm-sizer { max-width: 100% !important; }
+/* v5: 사람별 요약 · 연락 챙기기 · 통화 할 일 */
+.ks-person { padding: 8px 12px; border-radius: 10px; background: var(--background-secondary); display: flex; flex-direction: column; gap: 2px; }
+.ks-person-stats { font-weight: 600; font-size: var(--font-ui-small); }
+.ks-recent-when.is-care { color: var(--text-accent); }
+.ks-todo { display: flex; gap: 8px; align-items: flex-start; padding: 6px 4px; border-bottom: 1px solid var(--background-modifier-border); }
+.ks-todo input { margin-top: 4px; flex: none; }
+.ks-todo-body { display: flex; flex-direction: column; min-width: 0; }
+.ks-todo-body a { cursor: pointer; text-decoration: none; }
+.ks-todo.is-done .ks-todo-text { text-decoration: line-through; color: var(--text-muted); }
