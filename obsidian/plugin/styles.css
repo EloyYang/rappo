@@ -197,3 +197,20 @@ div.ks-section-head { cursor: default; }
 .rappo-dash .inline-title, .rappo-dash .metadata-container, .rappo-dash .frontmatter-container { display: none !important; }
 .rd-search { background: var(--background-secondary); border-radius: 12px; padding: 12px 14px; margin-bottom: 16px; }
 .rd-actions button.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
+/* v14: 👥 연락처 카드 */
+.rd-people-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.rd-people-bar input[type=search] { flex: 1 1 220px; min-width: 0; }
+.rd-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.rd-card { background: var(--background-secondary); border: 1px solid transparent; border-radius: 12px; padding: 12px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0; transition: border-color .12s, transform .12s; }
+.rd-card:hover { border-color: var(--interactive-accent); transform: translateY(-1px); }
+.rd-card-top { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.rd-avatar { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700;
+  background: var(--background-modifier-hover); color: var(--text-muted); font-size: 15px; }
+.rd-card-name { min-width: 0; }
+.rd-card-title { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rd-card-last { font-size: 12px; color: var(--text-muted); }
+.rd-card-last.is-fresh { color: var(--text-accent); font-weight: 600; }
+.rd-card-meta { display: flex; flex-wrap: wrap; gap: 4px; }
+.rd-chip { background: var(--background-primary); color: var(--text-muted); border-radius: 6px; padding: 1px 7px; font-size: 11px; }
+.rd-chip-link { cursor: pointer; text-decoration: none; }
+.rd-chip-link:hover { color: var(--text-accent); }

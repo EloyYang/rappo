@@ -1664,7 +1664,7 @@ class ContactDash {
     };
 
     // 1행: 할 일 | 챙길 날 + 일정
-    const row1 = r.createDiv({ cls: 'rd-row rd-row-3' });
+    const row1 = r.createDiv({ cls: 'rd-row' });
     const tb = section(row1.createDiv({ cls: 'rd-col' }), '✅ 할 일', open.length, modal('✅ 할 일', TodoView));
     const sorted = [...open].sort((a, b) => (PRIO_RANK[a.prio] - PRIO_RANK[b.prio]) || (a.due || '9999').localeCompare(b.due || '9999'));
     if (!sorted.length) empty(tb, '남은 할 일이 없어요');
@@ -1691,16 +1691,6 @@ class ContactDash {
     }
     const guessN = ev.filter((e) => e.guess).length;
     if (guessN) { const a = db.createEl('a', { cls: 'rd-hint', text: `🔎 카톡에서 찾은 생일 후보 ${guessN}명 확인하기 ›` }); a.onclick = modal('🎂 챙길 날', DaysView); }
-
-    // 최근 연락 (1행 세 번째 칸)
-    const rb = section(row1.createDiv({ cls: 'rd-col' }), '🕘 최근 연락', null, modal('🕘 최근 연락', RecentView));
-    for (const e of recent.filter((x) => !x.group).slice(0, 8)) {
-      const x = rowEl(rb);
-      const a = x.createEl('a', { cls: 'rd-text rd-link', text: e.name });
-      a.onclick = () => new SearchModal(P, { room: e.name }).open();
-      const latest = (e.call?.key || '') > (e.talk?.key || '') ? '📞' : '💬';
-      x.createSpan({ cls: 'rd-muted', text: `${latest} ${when(...e.last.split(' '))}` });
-    }
   }
 }
 class ContactDashChild extends MarkdownRenderChild {
@@ -1709,6 +1699,91 @@ class ContactDashChild extends MarkdownRenderChild {
     this.view = new ContactDash(this.plugin, this.containerEl);
     this.view.render();
   }
+}
+
+// ---------- 👥 연락처: 사람·단체방을 카드로 (```연락처```) ----------
+class PeopleView {
+  constructor(plugin, root) { this.plugin = plugin; this.app = plugin.app; this.root = root; this.q = ''; this.kind = 'person'; this.sort = 'recent'; this.shown = 24; }
+  async render() {
+    const r = this.root, P = this.plugin, app = this.app;
+    r.empty(); r.addClass('ks-root', 'rd-root');
+    const status = r.createDiv({ cls: 'ks-status', text: '연락처 정리 중…' });
+    await P.index.ensure();
+    status.remove();
+    // 연락처 노트: 이름 → 전화번호·노트
+    const notes = new Map();
+    for (const f of app.vault.getMarkdownFiles()) {
+      if (!f.path.startsWith(CONTACTS + '/')) continue;
+      const fm = app.metadataCache.getFileCache(f)?.frontmatter || {};
+      const nm = String(fm.name || '').trim(), ph = String(fm.phone || '');
+      notes.set(nm && nm !== '정보 없음' ? nm : ph || f.basename, { phone: ph, file: f });
+    }
+    // 한 번에 모아 세기: 통화 수, 1:1·단체방 메시지 수, 단체방에서 그 사람이 한 말, 마지막 연락
+    const st = new Map();
+    const get = (n) => { if (!st.has(n)) st.set(n, { name: n, group: false, own: false, last: '', calls: 0, talk: 0, gmsg: 0 }); return st.get(n); };
+    const seen = (e, d) => { if (d && d > e.last) e.last = d; };
+    for (const c of P.index.files.values()) {
+      if (c.call) { const e = get(c.room); e.own = true; e.calls++; seen(e, c.call.date); continue; }
+      const e = get(c.room); e.own = true; e.talk += c.msgs.length;
+      if (c.kind === '단체') e.group = true;
+      if (c.msgs.length) seen(e, c.msgs[c.msgs.length - 1].date);
+      if (c.kind === '단체') for (const m of c.msgs) if (m.who !== '나') { const w = get(m.who); w.gmsg++; seen(w, m.date); }
+    }
+    // 1:1 대화나 통화가 있는 사람, 그리고 단체방 (단체방에서만 본 사람은 빼서 목록이 길어지지 않게)
+    const all = [...st.values()].filter((e) => e.own).map((e) => ({ ...e, note: notes.get(e.name) }));
+    // 도구 막대
+    const bar = r.createDiv({ cls: 'rd-people-bar' });
+    const q = bar.createEl('input', { type: 'search', value: this.q, attr: { placeholder: '이름·번호 찾기 (초성도 돼요)' } });
+    q.oninput = debounce(() => { this.q = q.value; this.shown = 24; this.draw(grid, all); }, 200, true);
+    const seg = bar.createDiv({ cls: 'ks-seg' });
+    const cnt = (g) => all.filter((p) => p.group === g).length;
+    for (const [v, label] of [['person', `👤 사람 ${cnt(false)}`], ['group', `👥 단체방 ${cnt(true)}`]]) {
+      const b = seg.createEl('button', { text: label });
+      b.toggleClass('is-active', this.kind === v);
+      b.onclick = () => { this.kind = v; this.shown = 24; this.render(); };
+    }
+    const sel = bar.createEl('select', { cls: 'dropdown' });
+    for (const [v, label] of [['recent', '최근 연락 순'], ['many', '연락 많은 순'], ['name', '이름 순']]) sel.createEl('option', { value: v, text: label });
+    sel.value = this.sort;
+    sel.onchange = () => { this.sort = sel.value; this.draw(grid, all); };
+    const grid = r.createDiv();
+    this.draw(grid, all);
+  }
+  draw(grid, all) {
+    const P = this.plugin, app = this.app;
+    grid.empty();
+    let list = all.filter((p) => p.group === (this.kind === 'group'))
+      .filter((p) => !this.q.trim() || matchName(p.name, this.q.trim()) || (p.note?.phone || '').replace(/-/g, '').includes(this.q.replace(/\D/g, '') || '@'));
+    const score = (p) => p.calls * 20 + p.talk + p.gmsg;
+    list.sort(this.sort === 'name' ? (a, b) => a.name.localeCompare(b.name, 'ko')
+      : this.sort === 'many' ? (a, b) => score(b) - score(a) : (a, b) => b.last.localeCompare(a.last));
+    if (!list.length) { grid.createDiv({ cls: 'rd-empty', text: '찾는 연락처가 없어요.' }); return; }
+    const cards = grid.createDiv({ cls: 'rd-cards' });
+    for (const p of list.slice(0, this.shown)) {
+      const c = cards.createDiv({ cls: 'rd-card' });
+      c.onclick = (e) => { if (e.target.closest('a')) return; new SearchModal(P, { room: p.name }).open(); };
+      const top = c.createDiv({ cls: 'rd-card-top' });
+      top.createDiv({ cls: 'rd-avatar', text: p.group ? '👥' : (p.name.match(/[가-힣A-Za-z]/) || ['#'])[0] });
+      const nm = top.createDiv({ cls: 'rd-card-name' });
+      nm.createDiv({ cls: 'rd-card-title', text: p.name });
+      if (p.note?.phone && p.note.phone !== p.name) nm.createDiv({ cls: 'rd-muted', text: p.note.phone });
+      const gap = p.last ? daysSince(p.last) : null;
+      c.createDiv({ cls: 'rd-card-last' + (gap !== null && gap <= 7 ? ' is-fresh' : ''), text: p.last ? (gap === 0 ? '오늘 연락' : `${gap}일 전 · ${p.last.slice(2).replace(/-/g, '.')}`) : '' });
+      const meta = c.createDiv({ cls: 'rd-card-meta' });
+      if (p.calls) meta.createSpan({ cls: 'rd-chip', text: `📞 ${p.calls}` });
+      if (p.talk) meta.createSpan({ cls: 'rd-chip', text: `💬 ${p.talk.toLocaleString()}` });
+      if (p.gmsg) meta.createSpan({ cls: 'rd-chip', text: `👥 ${p.gmsg.toLocaleString()}` });
+      if (p.note) { const a = meta.createEl('a', { cls: 'rd-chip rd-chip-link', text: '노트' }); a.onclick = () => app.workspace.getLeaf(false).openFile(p.note.file); }
+    }
+    if (list.length > this.shown) {
+      const more = grid.createEl('button', { cls: 'ks-more', text: `더 보기 (${list.length - this.shown}개)` });
+      more.onclick = () => { this.shown += 24; this.draw(grid, all); };
+    }
+  }
+}
+class PeopleChild extends MarkdownRenderChild {
+  constructor(plugin, el) { super(el); this.plugin = plugin; }
+  onload() { new PeopleView(this.plugin, this.containerEl).render(); }
 }
 
 // 할 일(왼쪽) · 챙길 날(오른쪽)을 한 화면에 — 좁으면 위아래로
@@ -1774,6 +1849,7 @@ module.exports = class RappoSearch extends Plugin {
     this.app.workspace.onLayoutReady(() => setTimeout(() => this.dayNotice(), 8000));
     this.registerMarkdownCodeBlockProcessor('할일', (src, el, ctx) => ctx.addChild(new TodoChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('할일챙길날', (src, el, ctx) => ctx.addChild(new BoardChild(this, el)));
+    this.registerMarkdownCodeBlockProcessor('연락처', (src, el, ctx) => ctx.addChild(new PeopleChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('연락대시보드', (src, el, ctx) => ctx.addChild(new ContactDashChild(this, el)));
     this.addCommand({ id: 'open', name: 'Rappo 대화·통화 검색', callback: () => new SearchModal(this).open() });
     this.addRibbonIcon('message-circle', 'Rappo 대화·통화 검색', () => new SearchModal(this).open());

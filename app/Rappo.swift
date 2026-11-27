@@ -168,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var dayTimer: Timer?
     var windowTimer: Timer?
     var deferredWork = false      // 정해진 시간까지 미뤄 둔 일이 있음
+    var fdaWarned = false
     var catchUpQueued = false
     let events = EKEventStore()
     var calWatcher: Watcher?
@@ -282,6 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func updateStatus(_ now: String? = nil) {
         let state = now ?? (running != nil ? "정리 중…" : "대기 중")
         var t = "● " + state
+        if s.kakaoOn && !hasFullDiskAccess { t = "⚠️ 전체 디스크 접근 권한 필요 (카톡을 못 읽어요)" }
         if s.runMode != 0 && running == nil {
             t += s.inWindow() ? " (몰아서 정리하는 시간)" : (deferredWork ? " · \(s.winStart)시에 몰아서 정리 예정" : "")
         }
@@ -423,6 +425,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastLine.title = "마지막 실행: \(f.string(from: Date()))\(ok)"
         lastRun = f.string(from: Date())
         lastError = p.terminationStatus != 0
+        // 권한이 풀려 카톡을 못 읽으면 한 번 알림 (앱을 다시 빌드하면 macOS 가 권한을 풀 때가 있음)
+        if s.kakaoOn && !hasFullDiskAccess && !fdaWarned {
+            fdaWarned = true
+            notify("카카오톡 대화를 읽지 못했어요", "시스템 설정 › 전체 디스크 접근 권한에서 Rappo 를 껐다 켜 주세요", header: "Rappo")
+        }
         updateStatus()
         settingsWC?.refreshStatus()
         let a = p.arguments ?? []
@@ -591,11 +598,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }.resume()
     }
 
-    func notify(_ title: String, _ body: String) {
+    func notify(_ title: String, _ body: String, header: String = "Rappo · 챙길 날") {
         func esc(_ x: String) -> String { x.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        p.arguments = ["-e", "display notification \"\(esc(body))\" with title \"Rappo · 챙길 날\" subtitle \"\(esc(title))\" sound name \"Glass\""]
+        p.arguments = ["-e", "display notification \"\(esc(body))\" with title \"\(esc(header))\" subtitle \"\(esc(title))\" sound name \"Glass\""]
         try? p.run()
     }
 
