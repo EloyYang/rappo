@@ -1836,19 +1836,21 @@ module.exports = class RappoSearch extends Plugin {
     };
     // 탭마다 '이 파일을 처음 연 순간'에만 읽기 모드로 바꾼다 (그 뒤 직접 편집 모드로 바꾸면 그대로 둠)
     const forced = new WeakMap();
+    // 탭의 '보기 상태'로 판단 — 옵시디언이 아직 불러오지 않은 뒤쪽 탭(지연 로딩)도 함께 처리
     const ensureReading = () => {
       this.app.workspace.iterateAllLeaves((leaf) => {
-        const v = leaf.view;
-        if (!(v instanceof MarkdownView) || !v.file) return;
-        if (forced.get(leaf) === v.file.path) return;
-        if (!this.app.metadataCache.getFileCache(v.file)) return;   // 아직 색인 전이면 다음 기회에
-        forced.set(leaf, v.file.path);
-        if (!isDash(v.file) || v.getMode() === 'preview') return;
         const st = leaf.getViewState();
+        const path = st && st.type === 'markdown' && st.state && st.state.file;
+        if (!path || forced.get(leaf) === path) return;
+        const f = this.app.vault.getAbstractFileByPath(path);
+        if (!(f instanceof TFile) || !this.app.metadataCache.getFileCache(f)) return;   // 아직 색인 전이면 다음 기회에
+        // 대시보드가 아니거나 이미 읽기 모드인 걸 '확인'했을 때만 끝난 것으로 표시
+        // (옵시디언이 탭을 연 직후 편집 모드를 다시 덮어쓰는 경우가 있어, 확인될 때까지 몇 번 더 본다)
+        if (!isDash(f) || st.state.mode === 'preview') { forced.set(leaf, path); return; }
         leaf.setViewState({ ...st, state: { ...st.state, mode: 'preview' } });
       });
     };
-    const later = () => window.setTimeout(ensureReading, 0);
+    const later = () => { for (const t of [0, 150, 500, 1200, 2500]) window.setTimeout(ensureReading, t); };
     this.registerEvent(this.app.workspace.on('file-open', later));
     this.registerEvent(this.app.workspace.on('active-leaf-change', later));
     this.registerEvent(this.app.workspace.on('layout-change', later));
