@@ -46,7 +46,14 @@ cat >"$APP/Contents/Info.plist" <<EOF
 </dict></plist>
 EOF
 
-codesign --force --sign - --identifier "$ID" "$APP"
+# 이 맥에 'Rappo Local Signing' 인증서가 있으면 그것으로 서명 → 다시 빌드해도 서명이 같아서
+# 전체 디스크 접근 권한이 풀리지 않는다. 없으면 임시(ad-hoc) 서명.
+SIGN="$(security find-certificate -c "Rappo Local Signing" -Z 2>/dev/null | awk '/SHA-1 hash:/{print $3; exit}')"
+if [ -n "$SIGN" ]; then
+  codesign --force --sign "$SIGN" --identifier "$ID" "$APP"
+else
+  codesign --force --sign - --identifier "$ID" "$APP"
+fi
 
 # 기존 앱 종료 후 교체 (+ 예전 이름 CallNotes 정리)
 pkill -x Rappo 2>/dev/null || true
@@ -68,4 +75,4 @@ fi
 
 open "$DEST"
 echo "앱: $DEST  (코드 폴더: $CODE)"
-echo "⚠️  앱을 다시 빌드하면 '전체 디스크 접근 권한'을 다시 켜야 할 수 있습니다."
+[ -n "$SIGN" ] && echo "서명: Rappo Local Signing (다시 빌드해도 권한 유지)" || echo "⚠️  임시 서명이라 다시 빌드하면 '전체 디스크 접근 권한'을 다시 켜야 할 수 있습니다."
