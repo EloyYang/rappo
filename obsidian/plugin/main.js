@@ -1758,7 +1758,9 @@ class PeopleView {
     list.sort(this.sort === 'name' ? (a, b) => a.name.localeCompare(b.name, 'ko')
       : this.sort === 'many' ? (a, b) => score(b) - score(a) : (a, b) => b.last.localeCompare(a.last));
     if (!list.length) { grid.createDiv({ cls: 'rd-empty', text: '찾는 연락처가 없어요.' }); return; }
-    const cards = grid.createDiv({ cls: 'rd-cards' });
+    // 처음엔 한 줄만 (화면 폭에 맞는 만큼), 찾기 중이거나 펼치면 여러 줄
+    const one = !this.open && !this.q.trim();
+    const cards = grid.createDiv({ cls: 'rd-cards' + (one ? ' is-one-row' : '') });
     for (const p of list.slice(0, this.shown)) {
       const c = cards.createDiv({ cls: 'rd-card' });
       c.onclick = (e) => { if (e.target.closest('a')) return; new SearchModal(P, { room: p.name }).open(); };
@@ -1775,9 +1777,16 @@ class PeopleView {
       if (p.gmsg) meta.createSpan({ cls: 'rd-chip', text: `👥 ${p.gmsg.toLocaleString()}` });
       if (p.note) { const a = meta.createEl('a', { cls: 'rd-chip rd-chip-link', text: '노트' }); a.onclick = () => app.workspace.getLeaf(false).openFile(p.note.file); }
     }
-    if (list.length > this.shown) {
+    if (one) {
+      const more = grid.createEl('button', { cls: 'ks-more', text: `전체 보기 (${list.length}${this.kind === 'group' ? '개' : '명'})` });
+      more.onclick = () => { this.open = true; this.draw(grid, all); };
+    } else if (list.length > this.shown) {
       const more = grid.createEl('button', { cls: 'ks-more', text: `더 보기 (${list.length - this.shown}개)` });
       more.onclick = () => { this.shown += 24; this.draw(grid, all); };
+    }
+    if (this.open && !this.q.trim()) {
+      const fold = grid.createEl('button', { cls: 'ks-more', text: '접기' });
+      fold.onclick = () => { this.open = false; this.shown = 24; this.draw(grid, all); };
     }
   }
 }
