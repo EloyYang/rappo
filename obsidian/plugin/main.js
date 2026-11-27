@@ -19,6 +19,14 @@ function daysSince(d) { const x = new Date(d + 'T00:00:00'); return isNaN(x) ? 0
 const WEEK = ['일', '월', '화', '수', '목', '금', '토'];
 const CHO = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
 
+// 설명은 접어 두고 ⓘ 를 누르면 펼친다
+function helpTip(bar, text) {
+  const a = bar.createEl('a', { cls: 'ks-help', text: 'ⓘ', attr: { 'aria-label': '설명 보기' } });
+  const box = bar.createDiv({ cls: 'ks-help-text ks-muted', text });
+  box.hide();
+  a.onclick = () => box.toggle(!box.isShown());
+  return a;
+}
 function clean(t) { return t.replace(/<br\s*\/?>/gi, ' ⏎ '); }
 function weekday(d) { const x = new Date(d + 'T00:00:00'); return isNaN(x) ? '' : WEEK[x.getDay()]; }
 function pad(v) { return String(v).padStart(2, '0'); }
@@ -618,9 +626,9 @@ class RecentView {
     cb.checked = this.groups;
     lab.appendText(' 단체방 포함');
     cb.onchange = () => { this.groups = cb.checked; this.shown = 20; this.render(); };
-    bar.createSpan({ cls: 'ks-muted', text: this.mode === 'care'
+    helpTip(bar, this.mode === 'care'
       ? `자주 연락했는데 ${CARE_DAYS}일 넘게 연락이 없는 사람이에요. 오래된 순.`
-      : '이름을 누르면 그 사람과의 카톡·통화 전체, 📞/💬 를 누르면 그 노트가 열려요.' });
+      : '이름을 누르면 그 사람과의 카톡·통화 전체, 📞/💬 를 누르면 그 노트가 열려요.');
     let list = this.plugin.index.recent().filter((e) => this.groups || !e.group);
     if (this.mode === 'care') {
       // 연락한 날이 3일 이상이고, 마지막 연락이 CARE_DAYS일~1년 사이인 사람 — 평소 간격보다 길어진 사람부터
@@ -923,7 +931,8 @@ class MeetingsChild extends MarkdownRenderChild {
     const bar = el.createDiv({ cls: 'ks-recent-bar' });
     this.btn = bar.createEl('button', { cls: rec.on ? 'ks-rec-on' : 'mod-cta', text: rec.on ? `⏹ 회의 끝내기 · ${rec.elapsed()}` : '🎙 새 회의' });
     this.btn.onclick = () => rec.on ? rec.stop() : new MeetingModal(this.plugin, target).open();
-    bar.createSpan({ cls: 'ks-muted', text: rec.on ? `녹음 중: ${rec.title}` : '녹음을 끝내면 Rappo 가 회의록으로 정리하고, 내가 맡은 일은 할 일 목록에 넣어요.' });
+    if (rec.on) bar.createSpan({ cls: 'ks-muted', text: `녹음 중: ${rec.title}` });
+    else helpTip(bar, '녹음을 끝내면 Rappo 가 회의록으로 정리하고, 내가 맡은 일은 할 일 목록에 넣어요.');
     const list = target ? meetingsOf(app, target.name) : [];
     if (!list.length) { el.createDiv({ cls: 'ks-hint', text: target ? '아직 이 노트에 연결된 회의가 없어요.' : '프로젝트·영역 노트(type: project/area)에 넣으면 그 노트의 회의가 모여요.' }); return; }
     const box = el.createDiv({ cls: 'ks-recent' });
@@ -1463,7 +1472,7 @@ class DaysView {
     }
     const add = bar.createEl('button', { text: '✏️ 날짜·관계 적기' });
     add.onclick = () => this.plugin.days.openNote();
-    bar.createSpan({ cls: 'ks-muted', text: '7일·3일·1일 전과 당일에 맥 알림으로 알려 주고, 60일 안의 날은 캘린더에도 넣어요.' });
+    helpTip(bar, '7일·3일·1일 전과 당일에 맥 알림으로 알려 주고, 60일 안의 날은 캘린더에도 넣어요. ✏️ 날짜·관계 적기에서 생일·기념일을 직접 적을 수 있어요.');
     const list = ev.filter((e) => e.dday <= this.range);
     if (!list.length) r.createDiv({ cls: 'ks-hint', text: `앞으로 ${this.range === AHEAD ? '1년' : this.range + '일'} 안에 챙길 날이 없어요. 생일·관계를 적으면 여기 나타나요.` });
     const box = r.createDiv({ cls: 'ks-recent' });

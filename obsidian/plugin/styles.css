@@ -128,3 +128,7 @@ div.ks-section-head { cursor: default; }
 /* v10: PARA 노트의 회의 칸 */
 .ks-meet { border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 10px 12px; }
 .ks-meet button.ks-rec-on { background: var(--color-red); color: white; }
+/* v11: 접힌 설명 ⓘ */
+.ks-help { cursor: pointer; text-decoration: none; color: var(--text-faint); font-size: var(--font-ui-small); }
+.ks-help:hover { color: var(--text-accent); }
+.ks-help-text { flex-basis: 100%; }
