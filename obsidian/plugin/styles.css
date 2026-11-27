@@ -115,3 +115,11 @@ div.ks-section-head { cursor: default; }
 .ks-todo:hover .ks-todo-act { opacity: 1; }
 .ks-task-form .ks-form-row { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 8px; margin-bottom: 8px; }
 .ks-task-form input, .ks-task-form select { width: 100%; }
+/* v8: 할 일 · 챙길 날 좌우 배치 */
+.ks-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.ks-board-col { border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+.ks-board-title { font-weight: 700; font-size: var(--font-ui-medium); margin-bottom: 8px; }
+.ks-board-col .ks-recent-bar { gap: 6px; }
+.ks-board-col .ks-recent-bar > .ks-muted { flex-basis: 100%; }
+.ks-board-col .ks-recent { max-height: 70vh; overflow-y: auto; }
+@media (max-width: 900px) { .ks-board { grid-template-columns: 1fr; } }

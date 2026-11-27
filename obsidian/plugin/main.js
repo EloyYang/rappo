@@ -1301,6 +1301,18 @@ class DaysView {
   }
 }
 
+// 할 일(왼쪽) · 챙길 날(오른쪽)을 한 화면에 — 좁으면 위아래로
+class BoardChild extends MarkdownRenderChild {
+  constructor(plugin, el) { super(el); this.plugin = plugin; }
+  onload() {
+    const g = this.containerEl.createDiv({ cls: 'ks-board' });
+    const col = (title) => { const c = g.createDiv({ cls: 'ks-board-col' }); c.createDiv({ cls: 'ks-board-title', text: title }); return c.createDiv(); };
+    const left = col('✅ 할 일'), right = col('🎂 챙길 날');
+    new TodoView(this.plugin, left).render();
+    new DaysView(this.plugin, right).render();
+  }
+}
+
 class DaysChild extends MarkdownRenderChild {
   constructor(plugin, el) { super(el); this.plugin = plugin; }
   onload() { new DaysView(this.plugin, this.containerEl).render(); }
@@ -1324,6 +1336,7 @@ module.exports = class RappoSearch extends Plugin {
     // 옵시디언을 열면 하루 한 번, 3일 안에 챙길 날을 알림으로 (맥 알림용 upcoming.json 도 이때 새로 씀)
     this.app.workspace.onLayoutReady(() => setTimeout(() => this.dayNotice(), 8000));
     this.registerMarkdownCodeBlockProcessor('할일', (src, el, ctx) => ctx.addChild(new TodoChild(this, el)));
+    this.registerMarkdownCodeBlockProcessor('할일챙길날', (src, el, ctx) => ctx.addChild(new BoardChild(this, el)));
     this.addCommand({ id: 'open', name: 'Rappo 대화·통화 검색', callback: () => new SearchModal(this).open() });
     this.addRibbonIcon('message-circle', 'Rappo 대화·통화 검색', () => new SearchModal(this).open());
     // 바뀐 파일은 다음 검색 때 다시 읽는다 (mtime 비교)
