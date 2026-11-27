@@ -1151,7 +1151,13 @@ const HOLIDAYS = [
 const PLAN_KW = /보자|봐요|봬요|뵐게|뵙|볼까|만나|만날|약속|예약|미팅|회의|모임|방문|가자|갈게|올게|오기로|가기로|하기로|출발|픽업|데리러|식사|점심|저녁\s*먹|밥\s*먹|일정|잡자|잡을게|진료|병원|시술|상담|면접|수업|레슨/;
 const WD = '일월화수목금토';
 const AHEAD = 400;
-const LUNAR = (() => { try { return new Intl.DateTimeFormat('ko-KR-u-ca-chinese', { month: 'numeric', day: 'numeric' }); } catch (e) { return null; } })();
+// 음력은 한국 기준(단기력, dangi) — 중국 음력과 하루 다른 해가 있다 (예: 2027 설날은 한국 2/7, 중국 2/6)
+const LUNAR = (() => {
+  for (const c of ['dangi', 'chinese']) {
+    try { const f = new Intl.DateTimeFormat(`ko-KR-u-ca-${c}`, { month: 'numeric', day: 'numeric' }); if (f.resolvedOptions().calendar === c) return f; } catch (e) { /* 다음 */ }
+  }
+  return null;
+})();
 
 function ymd(x) { return `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`; }
 function lunarOf(x) {
@@ -1579,6 +1585,149 @@ class DaysView {
   }
 }
 
+// ---------- 연락 대시보드: 처음 열면 한 화면에 (```연락대시보드```) ----------
+function careList(recent) {
+  return recent.filter((e) => !e.group).map((e) => {
+    const d = [...e.days].sort(), gap = daysSince(e.last.slice(0, 10));
+    const span = d.length > 1 ? daysSince(d[0]) - gap : 0;
+    return { ...e, gap, every: d.length > 1 ? Math.max(1, Math.round(span / (d.length - 1))) : 0 };
+  }).filter((e) => e.days.size >= 3 && e.gap > CARE_DAYS && e.gap <= 365)
+    .sort((a, b) => b.gap / (b.every || 1) - a.gap / (a.every || 1));
+}
+class ViewModal extends Modal {
+  constructor(plugin, title, View) { super(plugin.app); this.plugin = plugin; this.t = title; this.View = View; }
+  onOpen() { this.modalEl.addClass('ks-modal'); this.titleEl.setText(this.t); new this.View(this.plugin, this.contentEl).render(); }
+  onClose() { this.contentEl.empty(); }
+}
+class ContactDash {
+  constructor(plugin, root) { this.plugin = plugin; this.app = plugin.app; this.root = root; }
+  async render() {
+    const r = this.root, P = this.plugin, app = this.app;
+    r.empty(); r.addClass('ks-root', 'rd-root');
+    const status = r.createDiv({ cls: 'ks-status', text: '연락 정리 중…' });
+    await P.index.ensure();
+    const tasks = await P.tasks.load();
+    const { ev, plans } = await P.days.upcoming();
+    const recent = P.index.recent();
+    status.remove();
+    const td = today(), open = tasks.filter((t) => t.status === ' ');
+    const late = open.filter((t) => t.due && t.due < td), soon = open.filter((t) => t.due && t.due >= td && -daysSince(t.due) <= 3);
+    const days7 = ev.filter((e) => e.dday <= 7 && !e.guess);
+    const todayC = recent.filter((e) => e.last.startsWith(td));
+    const care = careList(recent);
+    const meets = meetingsOf(app, '');
+    const modal = (title, View) => () => new ViewModal(P, title, View).open();
+
+    // 머리
+    const head = r.createDiv({ cls: 'rd-header' });
+    const ht = head.createDiv();
+    const now = new Date();
+    ht.createDiv({ cls: 'rd-date', text: `${now.getMonth() + 1}월 ${now.getDate()}일 ${WEEK[now.getDay()]}요일` });
+    ht.createDiv({ cls: 'rd-sub', text: '연락 · 할 일 · 챙길 날' });
+    const act = head.createDiv({ cls: 'rd-actions' });
+    const bm = act.createEl('button', { cls: 'mod-cta', text: P.recorder.on ? `⏹ 회의 끝내기 · ${P.recorder.elapsed()}` : '🎙 새 회의' });
+    bm.onclick = () => P.openMeeting();
+    act.createEl('button', { text: '＋ 할 일' }).onclick = () => new TaskModal(P, null, async (v) => { await P.tasks.add(v); this.render(); }).open();
+    act.createEl('button', { text: '🔍 대화 검색' }).onclick = () => new SearchModal(P).open();
+
+    // 숫자 타일
+    const kpi = r.createDiv({ cls: 'rd-kpis' });
+    const tile = (label, value, cls, hint, onclick) => {
+      const t = kpi.createDiv({ cls: `rd-kpi ${cls || ''}`, attr: { 'aria-label': '눌러서 전체 보기' } });
+      t.createDiv({ cls: 'rd-kpi-value', text: String(value) });
+      t.createDiv({ cls: 'rd-kpi-label', text: label });
+      if (hint) t.createDiv({ cls: 'rd-kpi-hint', text: hint });
+      t.onclick = onclick;
+    };
+    tile('남은 할 일', open.length, late.length ? 'over' : soon.length ? 'todo' : '', `마감 지남 ${late.length} · 3일 내 ${soon.length}`, modal('✅ 할 일', TodoView));
+    tile('7일 안 챙길 날', days7.length, days7.length ? 'todo' : '', days7[0] ? `${days7[0].dday ? 'D-' + days7[0].dday : '오늘'} ${days7[0].title}` : '조용한 한 주', modal('🎂 챙길 날', DaysView));
+    tile('다가오는 일정', plans.length, plans.length ? 'doing' : '', plans[0] ? `${plans[0].date.slice(5).replace('-', '/')} ${plans[0].room}` : '대화에서 정한 약속', modal('🎂 챙길 날 · 일정', DaysView));
+    tile('오늘 연락', todayC.length, '', `📞 ${todayC.filter((e) => e.call && e.call.date === td).length} · 💬 ${todayC.filter((e) => e.talk && e.talk.date === td).length}`, modal('🕘 최근 연락', RecentView));
+    tile('연락 챙기기', care.length, care.length ? 'care' : '', care[0] ? `${care[0].name} ${care[0].gap}일째` : '모두 연락하고 있어요', () => { const m = new ViewModal(P, '🔔 연락 챙기기', RecentView); m.onOpen = function () { this.modalEl.addClass('ks-modal'); this.titleEl.setText(this.t); const v = new RecentView(P, this.contentEl); v.mode = 'care'; v.render(); }; m.open(); });
+    tile('회의', meets.length, '', meets.filter((m) => !m.done).length ? `정리 중 ${meets.filter((m) => !m.done).length}개` : meets[0] ? meets[0].title : '🎙 새 회의로 시작', () => meets[0] && app.workspace.getLeaf(false).openFile(meets[0].file));
+
+    const section = (parent, title, count, more) => {
+      const s = parent.createDiv({ cls: 'rd-section' });
+      const h = s.createDiv({ cls: 'rd-section-head' });
+      h.createSpan({ cls: 'rd-section-title', text: title });
+      if (count !== null && count !== undefined) h.createSpan({ cls: 'rd-count', text: String(count) });
+      if (more) { const a = h.createEl('a', { cls: 'rd-more', text: '전체 보기 ›' }); a.onclick = more; }
+      return s.createDiv({ cls: 'rd-body' });
+    };
+    const rowEl = (box) => box.createDiv({ cls: 'rd-list-row' });
+    const empty = (box, t) => box.createDiv({ cls: 'rd-empty', text: t });
+    const dd = (row, d, extra) => {
+      const n = -daysSince(d);
+      row.createSpan({ cls: 'rd-dday' + (n < 0 ? ' over' : n <= 3 ? ' soon' : ''), text: n < 0 ? `${-n}일 지남` : n === 0 ? '오늘' : `D-${n}` + (extra || '') });
+    };
+
+    // 1행: 할 일 | 챙길 날 + 일정
+    const row1 = r.createDiv({ cls: 'rd-row' });
+    const tb = section(row1.createDiv({ cls: 'rd-col' }), '✅ 할 일', open.length, modal('✅ 할 일', TodoView));
+    const sorted = [...open].sort((a, b) => (PRIO_RANK[a.prio] - PRIO_RANK[b.prio]) || (a.due || '9999').localeCompare(b.due || '9999'));
+    if (!sorted.length) empty(tb, '남은 할 일이 없어요');
+    for (const t of sorted.slice(0, 8)) {
+      const x = rowEl(tb);
+      const c = x.createEl('input', { type: 'checkbox' });
+      c.onchange = async () => { await P.tasks.update(t, { status: 'x' }); this.render(); };
+      x.createSpan({ cls: `ks-prio is-${{ 높음: 'high', 보통: 'mid', 낮음: 'low' }[t.prio || '보통']}`, text: t.prio || '보통' });
+      x.createSpan({ cls: 'rd-text', text: t.text });
+      if (t.who) x.createSpan({ cls: 'rd-muted', text: t.who });
+      if (t.due) dd(x, t.due);
+    }
+    const db = section(row1.createDiv({ cls: 'rd-col' }), '🎂 챙길 날 · 📅 일정', ev.filter((e) => !e.guess && e.dday <= 90).length + plans.length, modal('🎂 챙길 날', DaysView));
+    const items = [
+      ...plans.slice(0, 4).map((p) => ({ d: p.date, icon: '📅', text: `${p.room} · ${clean(p.text).slice(0, 30)}`, sub: p.time })),
+      ...ev.filter((e) => e.guess ? e.dday <= 30 : e.dday <= 90).slice(0, 8).map((e) => ({ d: e.date, icon: e.kind === 'birth' ? '🎂' : e.kind === 'anniv' ? '💐' : '🗓', text: e.title + (e.guess ? ' (추정)' : ''), sub: '', guess: e.guess })),
+    ].sort((a, b) => a.d.localeCompare(b.d)).slice(0, 8);
+    if (!items.length) empty(db, '가까운 챙길 날이 없어요');
+    for (const it of items) {
+      const x = rowEl(db);
+      dd(x, it.d);
+      x.createSpan({ cls: 'rd-text' + (it.guess ? ' rd-guess' : ''), text: `${it.icon} ${it.text}` });
+      x.createSpan({ cls: 'rd-muted', text: `${it.d.slice(5).replace('-', '/')} (${weekday(it.d)})${it.sub ? ' ' + it.sub : ''}` });
+    }
+    const guessN = ev.filter((e) => e.guess).length;
+    if (guessN) { const a = db.createEl('a', { cls: 'rd-hint', text: `🔎 카톡에서 찾은 생일 후보 ${guessN}명 확인하기 ›` }); a.onclick = modal('🎂 챙길 날', DaysView); }
+
+    // 2행: 최근 연락 | 연락 챙기기 | 최근 회의
+    const row2 = r.createDiv({ cls: 'rd-row rd-row-3' });
+    const rb = section(row2.createDiv({ cls: 'rd-col' }), '🕘 최근 연락', null, modal('🕘 최근 연락', RecentView));
+    for (const e of recent.filter((x) => !x.group).slice(0, 8)) {
+      const x = rowEl(rb);
+      const a = x.createEl('a', { cls: 'rd-text rd-link', text: e.name });
+      a.onclick = () => new SearchModal(P, { room: e.name }).open();
+      const latest = (e.call?.key || '') > (e.talk?.key || '') ? '📞' : '💬';
+      x.createSpan({ cls: 'rd-muted', text: `${latest} ${when(...e.last.split(' '))}` });
+    }
+    const cb = section(row2.createDiv({ cls: 'rd-col' }), '🔔 연락 챙기기', care.length);
+    if (!care.length) empty(cb, '자주 연락하던 사람과 모두 연락하고 있어요');
+    for (const e of care.slice(0, 8)) {
+      const x = rowEl(cb);
+      const a = x.createEl('a', { cls: 'rd-text rd-link', text: e.name });
+      a.onclick = () => new SearchModal(P, { room: e.name }).open();
+      x.createSpan({ cls: 'rd-dday soon', text: `${e.gap}일째` });
+      if (e.every) x.createSpan({ cls: 'rd-muted', text: `평소 ${e.every}일마다` });
+    }
+    const mb = section(row2.createDiv({ cls: 'rd-col' }), '🎙 최근 회의', meets.length);
+    if (!meets.length) empty(mb, '아직 회의가 없어요. 위의 🎙 새 회의로 시작해요.');
+    for (const m of meets.slice(0, 8)) {
+      const x = rowEl(mb);
+      const a = x.createEl('a', { cls: 'rd-text rd-link', text: m.title });
+      a.onclick = () => app.workspace.getLeaf(false).openFile(m.file);
+      x.createSpan({ cls: 'rd-muted', text: (m.done ? '' : '⏳ ') + m.file.basename.slice(5, 10).replace('-', '/') });
+    }
+  }
+}
+class ContactDashChild extends MarkdownRenderChild {
+  constructor(plugin, el) { super(el); this.plugin = plugin; }
+  onload() {
+    this.view = new ContactDash(this.plugin, this.containerEl);
+    this.view.render();
+    this.registerEvent(this.plugin.app.workspace.on('rappo:rec', () => this.view.render()));
+  }
+}
+
 // 할 일(왼쪽) · 챙길 날(오른쪽)을 한 화면에 — 좁으면 위아래로
 class BoardChild extends MarkdownRenderChild {
   constructor(plugin, el) { super(el); this.plugin = plugin; }
@@ -1642,6 +1791,7 @@ module.exports = class RappoSearch extends Plugin {
     this.app.workspace.onLayoutReady(() => setTimeout(() => this.dayNotice(), 8000));
     this.registerMarkdownCodeBlockProcessor('할일', (src, el, ctx) => ctx.addChild(new TodoChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('할일챙길날', (src, el, ctx) => ctx.addChild(new BoardChild(this, el)));
+    this.registerMarkdownCodeBlockProcessor('연락대시보드', (src, el, ctx) => ctx.addChild(new ContactDashChild(this, el)));
     this.addCommand({ id: 'open', name: 'Rappo 대화·통화 검색', callback: () => new SearchModal(this).open() });
     this.addRibbonIcon('message-circle', 'Rappo 대화·통화 검색', () => new SearchModal(this).open());
     // 바뀐 파일은 다음 검색 때 다시 읽는다 (mtime 비교)
