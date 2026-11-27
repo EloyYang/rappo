@@ -1834,14 +1834,26 @@ module.exports = class RappoSearch extends Plugin {
       const cls = [].concat(fm.cssclasses || fm.cssclass || []).map(String);
       return cls.includes('pd-wide') || cls.includes('rappo-dash') || fm.view === 'reading';
     };
-    this.registerEvent(this.app.workspace.on('file-open', (f) => {
-      if (!isDash(f)) return;
-      const leaf = this.app.workspace.getMostRecentLeaf ? this.app.workspace.getMostRecentLeaf() : this.app.workspace.activeLeaf;
-      const v = leaf && leaf.view;
-      if (!(v instanceof MarkdownView) || v.file !== f || v.getMode() === 'preview') return;
-      const st = leaf.getViewState();
-      leaf.setViewState({ ...st, state: { ...st.state, mode: 'preview' } });
-    }));
+    // 탭마다 '이 파일을 처음 연 순간'에만 읽기 모드로 바꾼다 (그 뒤 직접 편집 모드로 바꾸면 그대로 둠)
+    const forced = new WeakMap();
+    const ensureReading = () => {
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        const v = leaf.view;
+        if (!(v instanceof MarkdownView) || !v.file) return;
+        if (forced.get(leaf) === v.file.path) return;
+        if (!this.app.metadataCache.getFileCache(v.file)) return;   // 아직 색인 전이면 다음 기회에
+        forced.set(leaf, v.file.path);
+        if (!isDash(v.file) || v.getMode() === 'preview') return;
+        const st = leaf.getViewState();
+        leaf.setViewState({ ...st, state: { ...st.state, mode: 'preview' } });
+      });
+    };
+    const later = () => window.setTimeout(ensureReading, 0);
+    this.registerEvent(this.app.workspace.on('file-open', later));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', later));
+    this.registerEvent(this.app.workspace.on('layout-change', later));
+    this.registerEvent(this.app.metadataCache.on('resolved', later));
+    this.app.workspace.onLayoutReady(later);
     this.registerMarkdownCodeBlockProcessor('회의', (src, el, ctx) => ctx.addChild(new MeetingsChild(this, el, ctx.sourcePath)));
     // 프로젝트·영역 노트 오른쪽 위에 🎙 새 회의 버튼
     const views = new WeakMap();
