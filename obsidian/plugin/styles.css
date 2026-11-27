@@ -125,3 +125,6 @@ div.ks-section-head { cursor: default; }
 @media (max-width: 900px) { .ks-board { grid-template-columns: 1fr; } }
 /* v9: 회의 녹음 상태 막대 */
 .ks-rec-bar { color: var(--color-red); font-weight: 600; cursor: pointer; }
+/* v10: PARA 노트의 회의 칸 */
+.ks-meet { border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 10px 12px; }
+.ks-meet button.ks-rec-on { background: var(--color-red); color: white; }

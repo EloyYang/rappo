@@ -2,7 +2,7 @@
 // 노트 폴더는 이 플러그인 폴더의 data.json {"base": "..."} (Rappo 설치 프로그램이 적음). 없으면 '2. Areas/통화기록'.
 // - ```대화검색``` (또는 ```카톡검색```) 코드블록 → 노트 안에 검색 화면
 // - 명령 "대화·통화 검색" / 리본 아이콘 → 어디서나 창으로
-const { Plugin, Modal, MarkdownRenderChild, TFile, Notice, debounce } = require('obsidian');
+const { Plugin, Modal, MarkdownRenderChild, MarkdownView, TFile, Notice, debounce } = require('obsidian');
 
 let BASE = '2. Areas/통화기록';
 let CONTACTS = BASE + '/연락처';
@@ -812,6 +812,7 @@ class Recorder {
     this.bar.onclick = () => this.stop();
   }
   get on() { return !!this.rec; }
+  elapsed() { const s = Math.floor((Date.now() - this.t0) / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; }
   async start(title, target) {
     if (this.rec) return;
     let stream;
@@ -824,7 +825,8 @@ class Recorder {
     this.rec.ondataavailable = (e) => { if (e.data && e.data.size) this.chunks.push(e.data); };
     this.rec.start(5000);
     this.bar.show();
-    const tick = () => { const s = Math.floor((Date.now() - this.t0) / 1000); this.bar.setText(`🔴 회의 녹음 ${pad(Math.floor(s / 60))}:${pad(s % 60)} · 눌러서 끝내기`); };
+    this.plugin.app.workspace.trigger('rappo:rec');
+    const tick = () => this.bar.setText(`🔴 회의 녹음 ${this.elapsed()} · 눌러서 끝내기`);
     tick(); this.timer = window.setInterval(tick, 1000);
     new Notice(`🔴 회의 녹음을 시작했어요: ${this.title}\n끝낼 때는 아래 상태 막대나 명령 'Rappo 회의 녹음 끝내기'.`);
   }
@@ -835,13 +837,18 @@ class Recorder {
     this.stream.getTracks().forEach((t) => t.stop());
     window.clearInterval(this.timer);
     this.rec = null; this.bar.hide();
+    this.plugin.app.workspace.trigger('rappo:rec');
     const d = this.t0, stamp = `${ymd(d)} ${hhmm(d)}`;
     const ext = /mp4/.test(this.mime) ? 'm4a' : 'webm';
     const audioName = `${stamp} ${this.title}.${ext}`;
     await ensureFolder(this.app, `${BASE}/회의/녹음`);
     const buf = await new Blob(this.chunks, { type: this.mime }).arrayBuffer();
     await this.app.vault.createBinary(`${BASE}/회의/녹음/${audioName}`, buf);
-    const notePath = `${BASE}/회의/${stamp} ${this.title}.md`;
+    // 프로젝트·영역에서 시작했으면 그 노트가 있는 폴더에 바로 (아니면 <저장 폴더>/회의)
+    const dir = this.target ? this.target.path.split('/').slice(0, -1).join('/') : `${BASE}/회의`;
+    await ensureFolder(this.app, dir);
+    let notePath = `${dir}/${stamp} ${this.title}.md`, n = 2;
+    while (this.app.vault.getAbstractFileByPath(notePath)) notePath = `${dir}/${stamp} ${this.title} (${n++}).md`;
     const note = await this.app.vault.create(notePath, `---
 type: note
 status: 메모용
@@ -865,7 +872,7 @@ tags: [회의록]
 }
 
 class MeetingModal extends Modal {
-  constructor(plugin) { super(plugin.app); this.plugin = plugin; }
+  constructor(plugin, target) { super(plugin.app); this.plugin = plugin; this.target = target || null; }
   onOpen() {
     const c = this.contentEl;
     this.titleEl.setText('🎙 회의 녹음');
@@ -873,15 +880,62 @@ class MeetingModal extends Modal {
     const r1 = c.createDiv({ cls: 'ks-form-row' }); r1.createEl('label', { text: '회의 이름' });
     const title = r1.createEl('input', { type: 'text', value: '', attr: { placeholder: '예: 주간 회의' } });
     const r2 = c.createDiv({ cls: 'ks-form-row' }); r2.createEl('label', { text: '연결' });
-    const para = paraInput(r2, this.app, '');
+    const para = paraInput(r2, this.app, this.target ? this.target.name : '');
     c.createDiv({ cls: 'ks-muted', text: '녹음은 이 볼트에 저장되고, Rappo 앱이 이 맥 안에서 받아 적어 회의록을 만들어요. 참석자에게 녹음한다고 알려 주세요.' });
     const btns = c.createDiv({ cls: 'ks-guess-btns' });
     const go = btns.createEl('button', { text: '🔴 녹음 시작', cls: 'mod-cta' });
     btns.createEl('button', { text: '취소' }).onclick = () => this.close();
-    go.onclick = async () => { this.close(); await this.plugin.recorder.start(title.value || '회의', para.pick()); };
+    go.onclick = async () => { this.close(); await this.plugin.recorder.start(title.value || '회의', para.pick() || this.target); };
     setTimeout(() => title.focus(), 50);
   }
   onClose() { this.contentEl.empty(); }
+}
+
+// ---------- PARA 노트 안의 회의 칸: ```회의``` ----------
+function targetOf(app, file) {
+  const fm = file && app.metadataCache.getFileCache(file)?.frontmatter;
+  const ty = fm && String(fm.type || '');
+  return ty === 'project' || ty === 'area' ? { name: file.basename, type: ty, status: String(fm.status || ''), path: file.path } : null;
+}
+function meetingsOf(app, name) {
+  const out = [];
+  for (const f of app.vault.getMarkdownFiles()) {
+    const fm = app.metadataCache.getFileCache(f)?.frontmatter;
+    if (!fm || !fm.meeting_audio) continue;
+    const links = [].concat(fm.project || [], fm.area || []).map((x) => String(x).replace(/^\[\[|\]\]$/g, '').split('|')[0]);
+    if (links.includes(name)) out.push({ file: f, done: !!fm.meeting_done, summary: String(fm.summary || ''), created: String(fm.created || ''), title: String(fm.title || f.basename) });
+  }
+  return out.sort((a, b) => b.file.basename.localeCompare(a.file.basename));
+}
+class MeetingsChild extends MarkdownRenderChild {
+  constructor(plugin, el, sourcePath) { super(el); this.plugin = plugin; this.sourcePath = sourcePath; }
+  onload() {
+    this.render();
+    this.registerEvent(this.plugin.app.workspace.on('rappo:rec', () => this.render()));
+    this.registerEvent(this.plugin.app.metadataCache.on('changed', (f) => { if (this.plugin.app.metadataCache.getFileCache(f)?.frontmatter?.meeting_audio) this.render(); }));
+    this.registerInterval(window.setInterval(() => { if (this.plugin.recorder.on && this.btn) this.btn.setText(`⏹ 회의 끝내기 · ${this.plugin.recorder.elapsed()}`); }, 1000));
+  }
+  render() {
+    const app = this.plugin.app, el = this.containerEl, rec = this.plugin.recorder;
+    el.empty(); el.addClass('ks-root', 'ks-meet');
+    const file = app.vault.getAbstractFileByPath(this.sourcePath);
+    const target = file instanceof TFile ? targetOf(app, file) : null;
+    const bar = el.createDiv({ cls: 'ks-recent-bar' });
+    this.btn = bar.createEl('button', { cls: rec.on ? 'ks-rec-on' : 'mod-cta', text: rec.on ? `⏹ 회의 끝내기 · ${rec.elapsed()}` : '🎙 새 회의' });
+    this.btn.onclick = () => rec.on ? rec.stop() : new MeetingModal(this.plugin, target).open();
+    bar.createSpan({ cls: 'ks-muted', text: rec.on ? `녹음 중: ${rec.title}` : '녹음을 끝내면 Rappo 가 회의록으로 정리하고, 내가 맡은 일은 할 일 목록에 넣어요.' });
+    const list = target ? meetingsOf(app, target.name) : [];
+    if (!list.length) { el.createDiv({ cls: 'ks-hint', text: target ? '아직 이 노트에 연결된 회의가 없어요.' : '프로젝트·영역 노트(type: project/area)에 넣으면 그 노트의 회의가 모여요.' }); return; }
+    const box = el.createDiv({ cls: 'ks-recent' });
+    for (const m of list.slice(0, 20)) {
+      const row = box.createDiv({ cls: 'ks-recent-row' });
+      const top = row.createDiv({ cls: 'ks-recent-top' });
+      const a = top.createEl('a', { cls: 'ks-recent-name', text: m.title });
+      a.onclick = () => app.workspace.getLeaf(false).openFile(m.file);
+      top.createSpan({ cls: 'ks-recent-when', text: (m.done ? '✓ 회의록 · ' : '⏳ 정리 중 · ') + m.file.basename.slice(0, 10) });
+      if (m.summary) row.createDiv({ cls: 'ks-recent-text', text: m.summary });
+    }
+  }
 }
 
 // ---------- 할 일 → PARA 노트 ----------
@@ -1528,6 +1582,28 @@ module.exports = class RappoSearch extends Plugin {
     this.registerMarkdownCodeBlockProcessor('챙길날', (src, el, ctx) => ctx.addChild(new DaysChild(this, el)));
     this.addCommand({ id: 'days', name: 'Rappo 챙길 날 적기', callback: () => this.days.openNote() });
     this.recorder = new Recorder(this);
+    this.registerMarkdownCodeBlockProcessor('회의', (src, el, ctx) => ctx.addChild(new MeetingsChild(this, el, ctx.sourcePath)));
+    // 프로젝트·영역 노트 오른쪽 위에 🎙 새 회의 버튼
+    const views = new WeakMap();
+    const mark = () => {
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        const v = leaf.view;
+        if (!(v instanceof MarkdownView)) return;
+        let b = views.get(v);
+        if (!b) { b = v.addAction('mic', 'Rappo 새 회의', () => this.recorder.on ? this.recorder.stop() : new MeetingModal(this, targetOf(this.app, v.file)).open()); views.set(v, b); }
+        b.toggle(!!targetOf(this.app, v.file) || this.recorder.on);
+      });
+    };
+    this.registerEvent(this.app.workspace.on('layout-change', mark));
+    this.registerEvent(this.app.workspace.on('file-open', mark));
+    this.registerEvent(this.app.metadataCache.on('changed', mark));
+    this.registerEvent(this.app.workspace.on('rappo:rec', mark));
+    this.app.workspace.onLayoutReady(mark);
+    this.addCommand({ id: 'meeting-block', name: 'Rappo 이 노트에 회의 칸 넣기', editorCallback: (ed) => {
+      const t = ed.getValue();
+      if (t.includes('```회의')) { new Notice('이미 회의 칸이 있어요'); return; }
+      ed.setValue(t.replace(/\n*$/, '\n') + '\n## 회의\n```회의\n```\n');
+    } });
     this.addCommand({ id: 'meeting', name: 'Rappo 회의 녹음 시작', callback: () => this.recorder.on ? this.recorder.stop() : new MeetingModal(this).open() });
     this.addCommand({ id: 'meeting-stop', name: 'Rappo 회의 녹음 끝내기', checkCallback: (chk) => { if (!this.recorder.on) return false; if (!chk) this.recorder.stop(); return true; } });
     this.addRibbonIcon('mic', 'Rappo 회의 녹음', () => this.recorder.on ? this.recorder.stop() : new MeetingModal(this).open());
