@@ -195,3 +195,5 @@ div.ks-section-head { cursor: default; }
 /* 연락 대시보드 노트: 제목·속성 숨기고 넓게 (PARA 대시보드 플러그인이 없어도) */
 .rappo-dash { --file-line-width: 100%; }
 .rappo-dash .inline-title, .rappo-dash .metadata-container, .rappo-dash .frontmatter-container { display: none !important; }
+.rd-search { background: var(--background-secondary); border-radius: 12px; padding: 12px 14px; margin-bottom: 16px; }
+.rd-actions button.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
