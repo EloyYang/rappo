@@ -1827,6 +1827,21 @@ module.exports = class RappoSearch extends Plugin {
     this.registerMarkdownCodeBlockProcessor('챙길날', (src, el, ctx) => ctx.addChild(new DaysChild(this, el)));
     this.addCommand({ id: 'days', name: 'Rappo 챙길 날 적기', callback: () => this.days.openNote() });
     this.recorder = new Recorder(this);
+    // 대시보드 노트(PARA 대시보드·연락 대시보드)는 열 때 늘 읽기 모드로 — 편집이 필요하면 그때 전환
+    const isDash = (f) => {
+      const fm = f && this.app.metadataCache.getFileCache(f)?.frontmatter;
+      if (!fm) return false;
+      const cls = [].concat(fm.cssclasses || fm.cssclass || []).map(String);
+      return cls.includes('pd-wide') || cls.includes('rappo-dash') || fm.view === 'reading';
+    };
+    this.registerEvent(this.app.workspace.on('file-open', (f) => {
+      if (!isDash(f)) return;
+      const leaf = this.app.workspace.getMostRecentLeaf ? this.app.workspace.getMostRecentLeaf() : this.app.workspace.activeLeaf;
+      const v = leaf && leaf.view;
+      if (!(v instanceof MarkdownView) || v.file !== f || v.getMode() === 'preview') return;
+      const st = leaf.getViewState();
+      leaf.setViewState({ ...st, state: { ...st.state, mode: 'preview' } });
+    }));
     this.registerMarkdownCodeBlockProcessor('회의', (src, el, ctx) => ctx.addChild(new MeetingsChild(this, el, ctx.sourcePath)));
     // 프로젝트·영역 노트 오른쪽 위에 🎙 새 회의 버튼
     const views = new WeakMap();
