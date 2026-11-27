@@ -337,7 +337,7 @@ def resummarize(call_dir: Path, cdir: Path):
         summary = summarize(transcript, when)
         if not summary:
             continue
-        first = summary.splitlines()[0].strip("# ").strip()
+        first = summary.splitlines()[0].strip("# ").lstrip("-*[] x").strip()
         t = t.replace("## 요약\n(요약 없음)", "## 요약\n" + summary, 1)
         t = re.sub(r'^summary: .*$', f"summary: {q(first)}", t, count=1, flags=re.M)
         p.write_text(t, encoding="utf-8")
@@ -524,7 +524,7 @@ def write_call(call_dir: Path, info: dict, display: str, contact: Path, segs, su
     dt = info["dt"]
     title = safe(f"{dt:%Y-%m-%d %H%M} {display}")
     p = call_dir / f"{title}.md"
-    first_line = summary.splitlines()[0].strip("# ").strip() if summary else ""
+    first_line = summary.splitlines()[0].strip("# ").lstrip("-*[] x").strip() if summary else ""
     transcript = "\n\n".join(fmt_line(s) for s in segs) or "(인식된 음성 없음)"
     audio_uri = info["path"].as_uri()
     p.write_text(
