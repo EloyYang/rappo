@@ -667,7 +667,7 @@ const CARE_DAYS = 30;
 // 한 줄: - [ ] 할 일 ⏫ 📅 2026-12-03 ⏰ 15:00 👤 홍길동 💬 메모 🔗 [[노트|통화 11/3]] 🆔 ab12cd
 //   상태 ' ' 남음 · 'x' 끝냄 · '-' 지움(다시 생기지 않게 남겨 둠)
 const TASK_LINE = /^(\s*)-\s+\[(.)\]\s+(.*)$/;
-const TASK_MARK = /\s*(⏫|🔼|🔽|📅|⏰|👤|💬|🔗|🆔)\s*/gu;
+const TASK_MARK = /\s*(⏫|🔼|🔽|📅|⏰|👤|💬|🔗|📝|🆔)\s*/gu;
 const PRIO_SYM = { 높음: '⏫', 보통: '🔼', 낮음: '🔽' };
 const PRIO_OF = { '⏫': '높음', '🔼': '보통', '🔽': '낮음' };
 const PRIO_RANK = { 높음: 0, 보통: 1, '': 1, 낮음: 2 };
@@ -675,7 +675,7 @@ const PRIO_RANK = { 높음: 0, 보통: 1, '': 1, 낮음: 2 };
 function parseTask(raw, line) {
   const m = TASK_LINE.exec(raw);
   if (!m) return null;
-  const t = { line, raw, status: m[2], text: '', prio: '', due: '', time: '', who: '', ctx: '', link: '', id: '' };
+  const t = { line, raw, status: m[2], text: '', prio: '', due: '', time: '', who: '', ctx: '', link: '', note: '', id: '' };
   const body = m[3], marks = [...body.matchAll(TASK_MARK)];
   t.text = (marks.length ? body.slice(0, marks[0].index) : body).trim();
   marks.forEach((k, i) => {
@@ -683,7 +683,7 @@ function parseTask(raw, line) {
     const s = k[1];
     if (PRIO_OF[s]) t.prio = PRIO_OF[s];
     else if (s === '📅') t.due = v; else if (s === '⏰') t.time = v; else if (s === '👤') t.who = v;
-    else if (s === '💬') t.ctx = v; else if (s === '🔗') t.link = v; else if (s === '🆔') t.id = v;
+    else if (s === '💬') t.ctx = v; else if (s === '🔗') t.link = v; else if (s === '📝') t.note = v; else if (s === '🆔') t.id = v;
   });
   return t;
 }
@@ -695,6 +695,7 @@ function taskLine(t) {
   if (t.who) p.push(`👤 ${t.who}`);
   if (t.ctx) p.push(`💬 ${t.ctx}`);
   if (t.link) p.push(`🔗 ${t.link}`);
+  if (t.note) p.push(`📝 ${t.note}`);
   if (t.id) p.push(`🆔 ${t.id}`);
   return p.join(' ');
 }
@@ -769,6 +770,163 @@ class TaskModal extends Modal {
   onClose() { this.contentEl.empty(); }
 }
 
+// ---------- PARA 대상 (프로젝트·영역 노트) ----------
+function paraTargets(app) {
+  const out = [];
+  for (const f of app.vault.getMarkdownFiles()) {
+    if (f.path.startsWith('4. Archive/')) continue;
+    const fm = app.metadataCache.getFileCache(f)?.frontmatter;
+    const ty = fm && String(fm.type || '');
+    if (ty === 'project' || ty === 'area') out.push({ name: f.basename, type: ty, status: String(fm.status || ''), path: f.path });
+  }
+  const rank = (x) => (x.type === 'project' ? (x.status === '진행 중' ? 0 : 1) : 2);
+  return out.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'ko'));
+}
+// 입력해서 고르는 칸 (datalist) — 값: 노트 이름 또는 ''
+function paraInput(parent, app, value) {
+  const targets = paraTargets(app);
+  const id = 'rappo-para-' + Math.random().toString(16).slice(2, 8);
+  const inp = parent.createEl('input', { type: 'text', value: value || '', attr: { list: id, placeholder: '프로젝트·영역 (비우면 연결 안 함)' } });
+  const dl = parent.createEl('datalist', { attr: { id } });
+  for (const t of targets) dl.createEl('option', { value: t.name, text: `${t.type === 'project' ? '📁 프로젝트' : '🗂 영역'}${t.status ? ' · ' + t.status : ''}` });
+  return { inp, pick: () => targets.find((t) => t.name === inp.value.trim()) || null };
+}
+function paraFm(target) {
+  const link = target ? `\n  - "[[${target.name}]]"` : ' []';
+  return `area:${target && target.type === 'area' ? link : ' []'}\nproject:${target && target.type === 'project' ? link : ' []'}`;
+}
+async function ensureFolder(app, path) {
+  let cur = '';
+  for (const part of path.split('/')) { cur = cur ? `${cur}/${part}` : part; if (!app.vault.getAbstractFileByPath(cur)) await app.vault.createFolder(cur).catch(() => {}); }
+}
+function safeName(s) { return String(s || '').replace(/[\\/:*?"<>|#^\[\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80); }
+function hhmm(d) { return `${pad(d.getHours())}${pad(d.getMinutes())}`; }
+
+// ---------- 회의 녹음 ----------
+class Recorder {
+  constructor(plugin) {
+    this.plugin = plugin; this.app = plugin.app; this.rec = null;
+    this.bar = plugin.addStatusBarItem();
+    this.bar.addClass('ks-rec-bar');
+    this.bar.hide();
+    this.bar.onclick = () => this.stop();
+  }
+  get on() { return !!this.rec; }
+  async start(title, target) {
+    if (this.rec) return;
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } }); }
+    catch (e) { new Notice('마이크를 쓸 수 없어요. 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 Obsidian 을 켜 주세요.'); return; }
+    const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+    this.stream = stream; this.chunks = []; this.title = safeName(title) || '회의'; this.target = target; this.t0 = new Date();
+    this.rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined);
+    this.mime = this.rec.mimeType || mime || 'audio/webm';
+    this.rec.ondataavailable = (e) => { if (e.data && e.data.size) this.chunks.push(e.data); };
+    this.rec.start(5000);
+    this.bar.show();
+    const tick = () => { const s = Math.floor((Date.now() - this.t0) / 1000); this.bar.setText(`🔴 회의 녹음 ${pad(Math.floor(s / 60))}:${pad(s % 60)} · 눌러서 끝내기`); };
+    tick(); this.timer = window.setInterval(tick, 1000);
+    new Notice(`🔴 회의 녹음을 시작했어요: ${this.title}\n끝낼 때는 아래 상태 막대나 명령 'Rappo 회의 녹음 끝내기'.`);
+  }
+  async stop() {
+    if (!this.rec) return;
+    const rec = this.rec;
+    await new Promise((r) => { rec.onstop = r; rec.stop(); });
+    this.stream.getTracks().forEach((t) => t.stop());
+    window.clearInterval(this.timer);
+    this.rec = null; this.bar.hide();
+    const d = this.t0, stamp = `${ymd(d)} ${hhmm(d)}`;
+    const ext = /mp4/.test(this.mime) ? 'm4a' : 'webm';
+    const audioName = `${stamp} ${this.title}.${ext}`;
+    await ensureFolder(this.app, `${BASE}/회의/녹음`);
+    const buf = await new Blob(this.chunks, { type: this.mime }).arrayBuffer();
+    await this.app.vault.createBinary(`${BASE}/회의/녹음/${audioName}`, buf);
+    const notePath = `${BASE}/회의/${stamp} ${this.title}.md`;
+    const note = await this.app.vault.create(notePath, `---
+type: note
+status: 메모용
+${paraFm(this.target)}
+created: ${ymd(d)}
+title: "${this.title}"
+meeting_audio: "${audioName}"
+tags: [회의록]
+---
+# ${this.title}
+
+![[${audioName}]]
+
+> [!note] ⏳ Rappo 가 받아 적고 회의록으로 정리하고 있어요
+> 끝나면 이 노트에 회의록 · 내 할 일 · 전사문이 채워지고, 내 할 일은 할 일 목록에도 들어가요.
+`);
+    await this.app.workspace.getLeaf(false).openFile(note);
+    const min = Math.round((Date.now() - d) / 60000);
+    new Notice(`⏹ 회의 녹음 저장 (${min}분). Rappo 가 곧 회의록으로 정리해요.`);
+  }
+}
+
+class MeetingModal extends Modal {
+  constructor(plugin) { super(plugin.app); this.plugin = plugin; }
+  onOpen() {
+    const c = this.contentEl;
+    this.titleEl.setText('🎙 회의 녹음');
+    c.addClass('ks-task-form');
+    const r1 = c.createDiv({ cls: 'ks-form-row' }); r1.createEl('label', { text: '회의 이름' });
+    const title = r1.createEl('input', { type: 'text', value: '', attr: { placeholder: '예: 주간 회의' } });
+    const r2 = c.createDiv({ cls: 'ks-form-row' }); r2.createEl('label', { text: '연결' });
+    const para = paraInput(r2, this.app, '');
+    c.createDiv({ cls: 'ks-muted', text: '녹음은 이 볼트에 저장되고, Rappo 앱이 이 맥 안에서 받아 적어 회의록을 만들어요. 참석자에게 녹음한다고 알려 주세요.' });
+    const btns = c.createDiv({ cls: 'ks-guess-btns' });
+    const go = btns.createEl('button', { text: '🔴 녹음 시작', cls: 'mod-cta' });
+    btns.createEl('button', { text: '취소' }).onclick = () => this.close();
+    go.onclick = async () => { this.close(); await this.plugin.recorder.start(title.value || '회의', para.pick()); };
+    setTimeout(() => title.focus(), 50);
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
+// ---------- 할 일 → PARA 노트 ----------
+class ParaModal extends Modal {
+  constructor(plugin, task, done) { super(plugin.app); this.plugin = plugin; this.task = task; this.done = done; }
+  onOpen() {
+    const c = this.contentEl, t = this.task;
+    this.titleEl.setText('📝 PARA 할 일 노트 만들기');
+    c.addClass('ks-task-form');
+    const r1 = c.createDiv({ cls: 'ks-form-row' }); r1.createEl('label', { text: '노트 이름' });
+    const name = r1.createEl('input', { type: 'text', value: safeName(t.text) });
+    const r2 = c.createDiv({ cls: 'ks-form-row' }); r2.createEl('label', { text: '연결' });
+    const para = paraInput(r2, this.app, '');
+    const r3 = c.createDiv({ cls: 'ks-form-row' }); r3.createEl('label', { text: '마감' });
+    const end = r3.createEl('input', { type: 'date', value: t.due || '' });
+    c.createDiv({ cls: 'ks-muted', text: "상태 '시작 전'인 노트로 만들어서 PARA 대시보드의 할 일 보드에 나와요. 프로젝트·영역을 고르면 그 폴더로 옮겨져요." });
+    const btns = c.createDiv({ cls: 'ks-guess-btns' });
+    const go = btns.createEl('button', { text: '만들기', cls: 'mod-cta' });
+    btns.createEl('button', { text: '취소' }).onclick = () => this.close();
+    go.onclick = async () => {
+      const nm = safeName(name.value) || safeName(t.text);
+      let path = `0. Inbox/${nm}.md`, n = 2;
+      while (this.app.vault.getAbstractFileByPath(path)) path = `0. Inbox/${nm} (${n++}).md`;
+      await ensureFolder(this.app, '0. Inbox');
+      const lk = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/.exec(t.link || '');
+      const f = await this.app.vault.create(path, `---
+type: note
+status: 시작 전
+${paraFm(para.pick())}
+end: ${end.value || ''}
+created: ${today()}
+---
+## 할 일
+- [ ] ${t.text}
+
+${t.who ? `- 누구와: ${t.who}\n` : ''}${t.ctx ? `- 무슨 일: ${t.ctx}\n` : ''}${lk ? `- 출처: [[${lk[1]}|${lk[2] || lk[1]}]]\n` : ''}- 할 일 목록: [[할 일]]
+`);
+      await this.done(f.basename, end.value);
+      this.close();
+      new Notice(`📝 노트를 만들었어요: ${f.basename}`);
+    };
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 class TodoView {
   constructor(plugin, root) { this.plugin = plugin; this.app = plugin.app; this.root = root; this.view = 'open'; this.src = ''; this.shown = 30; }
   async render() {
@@ -777,6 +935,7 @@ class TodoView {
     r.addClass('ks-root');
     const tk = this.plugin.tasks;
     const all = await tk.load();
+    this.calIds = new Set((await this.plugin.days.calDone())?.ids || []);
     const bar = r.createDiv({ cls: 'ks-recent-bar' });
     const seg = bar.createDiv({ cls: 'ks-seg' });
     const cnt = (s) => all.filter((t) => t.status === s).length;
@@ -807,13 +966,34 @@ class TodoView {
       more.onclick = () => { this.shown += 30; this.render(); };
     }
   }
+  async toCalendar(t) {
+    const go = async (tt) => {
+      this.plugin.data.calTasks = { ...(this.plugin.data.calTasks || {}), [tt.id]: true };
+      await this.plugin.saveData(this.plugin.data);
+      await this.plugin.days.upcoming();          // calendar.json 다시 쓰기 → Rappo 앱이 캘린더에
+      new Notice('📅 캘린더에 넣어요 (Rappo 앱이 곧 반영해요)');
+      this.render();
+    };
+    if (t.due) return go(t);
+    new Notice('캘린더에 넣으려면 마감 날짜가 필요해요.');
+    new TaskModal(this.plugin, t, async (v) => { await this.plugin.tasks.update(t, v); if (v.due) await go({ ...t, ...v }); else this.render(); }).open();
+  }
+  async syncNote(t, status) {
+    const nl = /\[\[([^\]|]+)/.exec(t.note || '');
+    const f = nl && this.app.metadataCache.getFirstLinkpathDest(nl[1], this.plugin.tasks.path);
+    if (f) await this.app.fileManager.processFrontMatter(f, (fm) => { fm.status = status; });
+  }
   row(box, t) {
     const tk = this.plugin.tasks;
     const row = box.createDiv({ cls: 'ks-todo' + (t.status !== ' ' ? ' is-done' : '') });
     const c = row.createEl('input', { type: 'checkbox' });
     c.checked = t.status === 'x' || t.status === 'X';
     c.disabled = t.status === '-';
-    c.onchange = async () => { await tk.update(t, { status: c.checked ? 'x' : ' ' }); this.render(); };
+    c.onchange = async () => {
+      await tk.update(t, { status: c.checked ? 'x' : ' ' });
+      await this.syncNote(t, c.checked ? '완료' : '시작 전');
+      this.render();
+    };
     const body = row.createDiv({ cls: 'ks-todo-body' });
     const top = body.createDiv({ cls: 'ks-todo-top' });
     const pr = top.createEl('a', { cls: `ks-prio is-${{ 높음: 'high', 보통: 'mid', 낮음: 'low' }[t.prio || '보통']}`, text: t.prio || '보통', attr: { 'aria-label': '눌러서 우선순위 바꾸기' } });
@@ -830,6 +1010,15 @@ class TodoView {
     const lk = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/.exec(t.link || '');
     if (lk) { const a = meta.createEl('a', { text: `🔗 ${lk[2] || lk[1]}`, cls: 'ks-daylink' }); a.onclick = () => this.app.workspace.openLinkText(lk[1], this.plugin.tasks.path, false); }
     const act = row.createDiv({ cls: 'ks-todo-act' });
+    if (t.status === ' ') {
+      const inCal = this.calIds.has(`task:${t.id}`), asked = !!(this.plugin.data.calTasks || {})[t.id];
+      const cal = act.createEl('a', { text: inCal ? '📅✓' : asked ? '📅…' : '📅', attr: { 'aria-label': inCal ? '캘린더에 들어감' : asked ? '캘린더에 넣는 중 (Rappo 앱)' : '캘린더에 넣기' } });
+      if (!inCal && !asked) cal.onclick = () => this.toCalendar(t);
+      const nl = /\[\[([^\]|]+)/.exec(t.note || '');
+      const pn = act.createEl('a', { text: nl ? '📝✓' : '📝', attr: { 'aria-label': nl ? 'PARA 노트 열기' : 'PARA 할 일 노트 만들기' } });
+      pn.onclick = () => nl ? this.app.workspace.openLinkText(nl[1], tk.path, false)
+        : new ParaModal(this.plugin, t, async (name, end) => { await tk.update(t, { note: `[[${name}]]`, due: t.due || end }); this.render(); }).open();
+    }
     const ed = act.createEl('a', { text: '✏️', attr: { 'aria-label': '고치기' } });
     ed.onclick = () => new TaskModal(this.plugin, t, async (v) => { await tk.update(t, v); this.render(); }).open();
     if (t.status === '-') {
@@ -1151,6 +1340,12 @@ class Days {
         events.push({ id: p.id, title: `${p.room} · ${clean(p.text).slice(0, 40)}`, date: p.date, time: p.time,
           notes: `${p.src === 'call' ? '통화' : '카톡'} ${p.room} (${p.said})\n${p.who ? p.who + ': ' : ''}${clean(p.text)}` });
       }
+      const ct = this.plugin.data.calTasks || {};
+      for (const t of this.plugin.tasks.cache || []) {
+        if (!ct[t.id] || !t.due || t.status === '-') continue;
+        events.push({ id: `task:${t.id}`, title: `✅ ${t.text}`, date: t.due, time: t.time || '',
+          notes: [t.who && `누구와: ${t.who}`, t.ctx && `무슨 일: ${t.ctx}`, 'Rappo 할 일'].filter(Boolean).join('\n') });
+      }
       const s = JSON.stringify({ made: today(), events }, null, 1);
       if (this.lastCal !== s) { await this.app.vault.adapter.write(`${this.plugin.manifest.dir}/calendar.json`, s); this.lastCal = s; }
     } catch (e) { console.warn('Rappo: calendar.json', e); }
@@ -1262,7 +1457,7 @@ class DaysView {
     cb.checked = auto;
     lab.appendText(' 시각까지 정해진 일정은 자동으로 캘린더에');
     cb.onchange = async () => { this.plugin.data.autoPlan = cb.checked; await this.plugin.saveData(this.plugin.data); this.render(); };
-    head.createSpan({ cls: 'ks-muted', text: done?.calendar ? `→ ${done.calendar}` : '→ Rappo 설정 › AI·캘린더에서 캘린더를 골라 주세요' });
+    head.createSpan({ cls: 'ks-muted', text: done?.calendar ? `→ ${done.calendar}` : '→ Rappo 설정 › 정리·AI·캘린더에서 캘린더를 골라 주세요' });
     if (!list.length) { sec.createDiv({ cls: 'ks-hint', text: '최근 60일 대화에서 앞으로의 약속을 찾지 못했어요.' }); return; }
     for (const p of list.slice(0, this.planShown || 10)) {
       const row = sec.createDiv({ cls: 'ks-day-row' });
@@ -1332,6 +1527,10 @@ module.exports = class RappoSearch extends Plugin {
     this.registerMarkdownCodeBlockProcessor('최근연락', (src, el, ctx) => ctx.addChild(new RecentChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('챙길날', (src, el, ctx) => ctx.addChild(new DaysChild(this, el)));
     this.addCommand({ id: 'days', name: 'Rappo 챙길 날 적기', callback: () => this.days.openNote() });
+    this.recorder = new Recorder(this);
+    this.addCommand({ id: 'meeting', name: 'Rappo 회의 녹음 시작', callback: () => this.recorder.on ? this.recorder.stop() : new MeetingModal(this).open() });
+    this.addCommand({ id: 'meeting-stop', name: 'Rappo 회의 녹음 끝내기', checkCallback: (chk) => { if (!this.recorder.on) return false; if (!chk) this.recorder.stop(); return true; } });
+    this.addRibbonIcon('mic', 'Rappo 회의 녹음', () => this.recorder.on ? this.recorder.stop() : new MeetingModal(this).open());
     this.addCommand({ id: 'task-add', name: 'Rappo 할 일 추가', callback: () => new TaskModal(this, null, (v) => this.tasks.add(v)).open() });
     // 옵시디언을 열면 하루 한 번, 3일 안에 챙길 날을 알림으로 (맥 알림용 upcoming.json 도 이때 새로 씀)
     this.app.workspace.onLayoutReady(() => setTimeout(() => this.dayNotice(), 8000));
@@ -1343,6 +1542,7 @@ module.exports = class RappoSearch extends Plugin {
     this.registerEvent(this.app.vault.on('delete', (f) => this.index.files.delete(f.path)));
     this.registerEvent(this.app.vault.on('rename', (f, old) => this.index.files.delete(old)));
   }
+  onunload() { if (this.recorder && this.recorder.on) this.recorder.stop(); }
   async dayNotice() {
     try {
       const { ev } = await this.days.upcoming();

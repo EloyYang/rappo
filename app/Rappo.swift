@@ -65,6 +65,14 @@ final class Settings {
     var aiEngine: Int { get { d.integer(forKey: "aiEngine") } set { d.set(newValue, forKey: "aiEngine") } }
     var aiModel: String { get { (d.string(forKey: "aiModel") ?? "").isEmpty ? "qwen3.5:4b" : d.string(forKey: "aiModel")! } set { d.set(newValue, forKey: "aiModel") } }
     // 캘린더: 챙길 날·대화 일정을 넣을 캘린더 (EventKit — 맥 캘린더에 연결된 구글 캘린더 포함)
+    // 정리 시간: 0 실시간 · 1 받아 적기는 바로, AI 정리는 정해진 시간에 · 2 모두 정해진 시간에 몰아서
+    var runMode: Int { get { d.integer(forKey: "runMode") } set { d.set(newValue, forKey: "runMode") } }
+    var winStart: Int { get { d.object(forKey: "winStart") == nil ? 2 : d.integer(forKey: "winStart") } set { d.set(newValue, forKey: "winStart") } }
+    var winEnd: Int { get { d.object(forKey: "winEnd") == nil ? 6 : d.integer(forKey: "winEnd") } set { d.set(newValue, forKey: "winEnd") } }
+    func inWindow(_ date: Date = Date()) -> Bool {
+        let h = Calendar.current.component(.hour, from: date)
+        return winStart <= winEnd ? (h >= winStart && h < winEnd) : (h >= winStart || h < winEnd)
+    }
     var calOn: Bool { get { d.bool(forKey: "calOn") } set { d.set(newValue, forKey: "calOn") } }
     var calId: String { get { d.string(forKey: "calId") ?? "" } set { d.set(newValue, forKey: "calId") } }
     // 이 시각(통화 시각) 이전 녹취는 건너뜀. "yyyy-MM-dd HH:mm", 비우면 전부
@@ -80,7 +88,7 @@ final class Settings {
         return f.string(from: Date())
     }
 
-    static let keys = ["recordDir", "vaultDir", "kakaoDir", "kakaoMe", "kakaoMode", "intervalMin", "quietSec", "minGapMin", "summary", "since", "pollMin", "recordMode", "kakaoOn", "aiEngine", "aiModel", "calOn", "calId"]
+    static let keys = ["recordDir", "vaultDir", "kakaoDir", "kakaoMe", "kakaoMode", "intervalMin", "quietSec", "minGapMin", "summary", "since", "pollMin", "recordMode", "kakaoOn", "aiEngine", "aiModel", "calOn", "calId", "runMode", "winStart", "winEnd"]
     // 볼트 안에서 노트를 모아 두는 폴더 (install.sh 가 config.sh 에 적음)
     var baseDir: String { let b = base["RAPPO_BASE"] ?? ""; return b.isEmpty ? "2. Areas/통화기록" : b }
 
@@ -158,6 +166,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pollTimer: Timer?
     var knownRecords: Set<String>? = nil   // 주기 확인용: 마지막으로 본 녹취 파일 목록
     var dayTimer: Timer?
+    var windowTimer: Timer?
+    var deferredWork = false      // 정해진 시간까지 미뤄 둔 일이 있음
+    var catchUpQueued = false
     let events = EKEventStore()
     var calWatcher: Watcher?
     var calDebounce: Timer?
@@ -174,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 챙길 날 알림: 시작 30초 뒤, 그다음 1시간마다 (7·3·1일 전과 당일, 한 번씩)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.checkDays() }
         dayTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkDays(); self?.syncCalendar() }
+        windowTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.checkWindow() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [weak self] in self?.syncCalendar() }
     }
 
@@ -186,6 +198,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 설정이 바뀔 때마다 감시·타이머를 다시 건다
     func applySettings() {
         watchers.removeAll()
+        // 옵시디언에서 녹음한 회의 (볼트/<저장 폴더>/회의/녹음)
+        let meetDir = s.vaultDir + "/" + s.baseDir + "/회의/녹음"
+        if FileManager.default.fileExists(atPath: s.vaultDir + "/.obsidian") {
+            try? FileManager.default.createDirectory(atPath: meetDir, withIntermediateDirectories: true)
+            if let w = Watcher(path: meetDir, handler: { [weak self] _ in self?.recordChanged() }) { watchers.append(w) }
+        }
         // 옵시디언 플러그인이 calendar.json 을 고치면 바로 캘린더에 반영
         calWatcher = Watcher(path: pluginDir) { [weak self] paths in
             guard paths.contains(where: { $0.hasSuffix("calendar.json") }) else { return }
@@ -264,6 +282,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func updateStatus(_ now: String? = nil) {
         let state = now ?? (running != nil ? "정리 중…" : "대기 중")
         var t = "● " + state
+        if s.runMode != 0 && running == nil {
+            t += s.inWindow() ? " (몰아서 정리하는 시간)" : (deferredWork ? " · \(s.winStart)시에 몰아서 정리 예정" : "")
+        }
         if !lastRun.isEmpty { t += " · 마지막 정리 " + lastRun + (lastError ? " (문제 있음)" : "") }
         statusLine.title = t
     }
@@ -360,9 +381,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 실행
 
-    func request(_ args: [String]) {
+    func request(_ args: [String], manual: Bool = false) {
         var args = args
-        if !s.summary && !args.contains("--resummarize") { args.append("--no-summary") }
+        // 정리 시간: 정해진 시간 밖이면 미루거나(모두) AI 만 미룬다. 직접 누른 '지금 정리하기'는 바로.
+        if !manual && !s.inWindow() && !args.contains("--catch-up") && !args.contains("--setup-obsidian") {
+            if s.runMode == 2 { deferredWork = true; updateStatus(); return }
+            if s.runMode == 1 && !args.contains("--resummarize") { args.append("--no-summary"); deferredWork = true }
+        }
+        if !s.summary && !args.contains("--resummarize") && !args.contains("--no-summary") { args.append("--no-summary") }
         if !s.kakaoOn { args.removeAll { $0 == "--kakao-db" } }
         if running != nil {
             if pendingArgs == nil || args.contains("--kakao-db") { pendingArgs = args }
@@ -388,6 +414,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func finished(_ p: Process) {
         running = nil
         setIcon(busy: false)
+        defer {
+            if running == nil, pendingArgs == nil, catchUpQueued { catchUpQueued = false; request(["--catch-up"], manual: true) }
+        }
         let f = DateFormatter()
         f.dateFormat = "M/d HH:mm"
         let ok = p.terminationStatus == 0 ? "" : " (오류 \(p.terminationStatus) — 로그 확인)"
@@ -410,9 +439,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc func runNow() { request(["--kakao-db"]) }
+    @objc func runNow() {
+        // 지금 정리하기: 미뤄 둔 AI 정리까지 한꺼번에
+        request(["--kakao-db"], manual: true)
+        if s.runMode != 0 || deferredWork { catchUpQueued = true; deferredWork = false }
+    }
+    // 정해진 시간이 되면 몰아서: 새 녹취·카톡 → 미뤄 둔 AI 정리 (하루 한 번 + 그 뒤 생긴 일)
+    func checkWindow() {
+        guard s.runMode != 0, s.inWindow() else { return }
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        let today = f.string(from: Date())
+        let ud = UserDefaults.standard
+        guard deferredWork || ud.string(forKey: "lastCatchUp") != today else { return }
+        ud.set(today, forKey: "lastCatchUp")
+        deferredWork = false
+        request(s.kakaoOn ? ["--kakao-db"] : [], manual: true)
+        catchUpQueued = true
+        updateStatus()
+    }
     @objc func runRecordings() { request([]) }
-    @objc func runResummarize() { request(["--resummarize"]) }
+    @objc func runResummarize() { request(["--resummarize"], manual: true) }
 
     // MARK: 열기
 
@@ -640,6 +686,10 @@ final class SettingsWindow: NSWindowController {
     let obsidianState = SettingsWindow.note("")
     let loginCheck = NSButton(checkboxWithTitle: "로그인하면 Rappo 자동 실행", target: nil, action: nil)
     let fdaState = NSTextField(labelWithString: "")
+    let runPopup = NSPopUpButton()
+    let startPopup = NSPopUpButton()
+    let endPopup = NSPopUpButton()
+    let runNote = SettingsWindow.note("")
     // 카카오톡
     let kakaoCheck = NSButton(checkboxWithTitle: "카카오톡 대화 가져오기", target: nil, action: nil)
     let modePopup = NSPopUpButton()
@@ -724,6 +774,9 @@ final class SettingsWindow: NSWindowController {
     // MARK: 화면
     func build() {
         for c in [skipOldCheck, summaryCheck, loginCheck, kakaoCheck, calCheck] { c.target = self; c.action = #selector(changed) }
+        runPopup.addItems(withTitles: ["실시간 (들어오면 바로)", "받아 적기는 바로 · AI 정리는 정해진 시간에", "정해진 시간에 모두 몰아서"])
+        for p in [startPopup, endPopup] { p.addItems(withTitles: (0..<24).map { "\($0)시" }) }
+        for p in [runPopup, startPopup, endPopup] { p.target = self; p.action = #selector(changed) }
         aiPopup.addItems(withTitles: ["자동 (로컬 모델이 켜져 있으면 로컬)", "로컬 모델 (Ollama)", "Claude Code"])
         aiPopup.target = self; aiPopup.action = #selector(changed)
         modelField.placeholderString = "qwen3.5:4b"
@@ -769,6 +822,11 @@ final class SettingsWindow: NSWindowController {
             SettingsWindow.note("대화에서 ‘나’로 표시할 이름이에요. 보통은 비워 두면 돼요."),
         ])
         let ai = page([
+            header("정리 시간"),
+            row([runPopup]),
+            row([NSTextField(labelWithString: "정해진 시간"), startPopup, NSTextField(labelWithString: "부터"), endPopup, NSTextField(labelWithString: "까지")]),
+            runNote,
+            gap(),
             header("통화 요약 AI"),
             summaryCheck,
             row([NSTextField(labelWithString: "사용할 AI"), aiPopup]),
@@ -801,7 +859,7 @@ final class SettingsWindow: NSWindowController {
         ])
 
         let tabs = NSTabView()
-        for (t, v) in [("일반", general), ("카카오톡", kakao), ("AI·캘린더", ai), ("고급", tools)] {
+        for (t, v) in [("일반", general), ("카카오톡", kakao), ("정리·AI·캘린더", ai), ("고급", tools)] {
             let it = NSTabViewItem(identifier: t); it.label = t; it.view = v; tabs.addTabViewItem(it)
         }
         tabs.translatesAutoresizingMaskIntoConstraints = false
@@ -813,7 +871,7 @@ final class SettingsWindow: NSWindowController {
             tabs.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -12),
             tabs.bottomAnchor.constraint(equalTo: cv.bottomAnchor, constant: -12),
             tabs.widthAnchor.constraint(equalToConstant: 580),
-            tabs.heightAnchor.constraint(equalToConstant: 470),
+            tabs.heightAnchor.constraint(equalToConstant: 600),
         ])
     }
 
@@ -834,6 +892,9 @@ final class SettingsWindow: NSWindowController {
         meField.stringValue = s.kakaoMe
         recordPopup.selectItem(at: s.recordMode.rawValue)
         pollField.integerValue = s.pollMin
+        runPopup.selectItem(at: s.runMode)
+        startPopup.selectItem(at: s.winStart)
+        endPopup.selectItem(at: s.winEnd)
         aiPopup.selectItem(at: s.aiEngine)
         modelField.stringValue = s.aiModel
         calCheck.state = s.calOn ? .on : .off
@@ -878,6 +939,13 @@ final class SettingsWindow: NSWindowController {
         intervalField.isEnabled = k && s.kakaoMode != .change
         pollField.isEnabled = s.recordMode != .change
         sincePicker.isEnabled = skipOldCheck.state == .on
+        startPopup.isEnabled = s.runMode != 0
+        endPopup.isEnabled = s.runMode != 0
+        runNote.stringValue = [
+            "새 녹취·카톡·회의가 들어오면 바로 받아 적고 AI 로 정리해요.",
+            "받아 적기와 카톡 가져오기는 바로, 요약·할 일·회의록 같은 AI 정리는 \(s.winStart)시~\(s.winEnd)시에 몰아서 해요. 낮에는 맥이 가벼워요.",
+            "모든 정리를 \(s.winStart)시~\(s.winEnd)시에 몰아서 해요. 그 사이 맥이 깨어 있어야 해요 (잠자기면 깨어난 뒤 그 시간대에).",
+        ][max(0, min(2, s.runMode))] + " ‘지금 정리하기’를 누르면 언제든 바로 해요."
         let access = app.calAccess
         calState.stringValue = !access ? "⚠️ 캘린더 접근을 허용해 주세요." : !s.calOn ? "꺼져 있어요." :
             "✅ 켜짐 · 지금까지 \((UserDefaults.standard.dictionary(forKey: "calAdded") ?? [:]).count)개 넣음"
@@ -900,6 +968,9 @@ final class SettingsWindow: NSWindowController {
         s.kakaoMe = meField.stringValue.trimmingCharacters(in: .whitespaces)
         s.recordMode = RecordMode(rawValue: recordPopup.indexOfSelectedItem) ?? .auto
         s.pollMin = max(1, pollField.integerValue)
+        s.runMode = runPopup.indexOfSelectedItem
+        s.winStart = startPopup.indexOfSelectedItem
+        s.winEnd = endPopup.indexOfSelectedItem
         s.aiEngine = aiPopup.indexOfSelectedItem
         let m = modelField.stringValue.trimmingCharacters(in: .whitespaces)
         s.aiModel = m.isEmpty ? "qwen3.5:4b" : m

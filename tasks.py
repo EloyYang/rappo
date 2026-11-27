@@ -221,8 +221,8 @@ def _existing(p: Path) -> set[str]:
     for line in p.read_text(encoding="utf-8").splitlines():
         m = re.match(r"^\s*-\s+\[.\]\s+(.+)$", line)
         if m:
-            body = re.split(r"\s(?:⏫|🔼|🔽|📅|⏰|👤|💬|🔗|🆔)", " " + m.group(1))[0]
-            who = re.search(r"👤\s*([^💬🔗🆔📅⏰⏫🔼🔽]+)", line)
+            body = re.split(r"\s(?:⏫|🔼|🔽|📅|⏰|👤|💬|🔗|📝|🆔)", " " + m.group(1))[0]
+            who = re.search(r"👤\s*([^💬🔗📝🆔📅⏰⏫🔼🔽]+)", line)
             keys.add(_norm(body) + "|" + _norm(who.group(1) if who else ""))
     return keys
 

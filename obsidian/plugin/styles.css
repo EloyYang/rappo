@@ -123,3 +123,5 @@ div.ks-section-head { cursor: default; }
 .ks-board-col .ks-recent-bar > .ks-muted { flex-basis: 100%; }
 .ks-board-col .ks-recent { max-height: 70vh; overflow-y: auto; }
 @media (max-width: 900px) { .ks-board { grid-template-columns: 1fr; } }
+/* v9: 회의 녹음 상태 막대 */
+.ks-rec-bar { color: var(--color-red); font-weight: 600; cursor: pointer; }

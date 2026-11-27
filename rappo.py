@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import unicodedata
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -126,10 +126,23 @@ def load_pcm(path: Path):
 
 # ---------- 화자 분리 (sherpa-onnx, 로컬) ----------
 _dia = _ext = None
+_dia_multi = None
 
 
-def _models():
-    global _dia, _ext
+def _models(multi: bool = False):
+    """multi=True: 회의처럼 화자 수를 모를 때 (자동으로 묶음)"""
+    global _dia, _ext, _dia_multi
+    if multi and _dia_multi is None:
+        import sherpa_onnx as so
+        emb = str(MODELS / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx")
+        seg = str(MODELS / "sherpa-onnx-pyannote-segmentation-3-0/model.onnx")
+        _dia_multi = so.OfflineSpeakerDiarization(so.OfflineSpeakerDiarizationConfig(
+            segmentation=so.OfflineSpeakerSegmentationModelConfig(
+                pyannote=so.OfflineSpeakerSegmentationPyannoteModelConfig(model=seg)),
+            embedding=so.SpeakerEmbeddingExtractorConfig(model=emb),
+            clustering=so.FastClusteringConfig(num_clusters=-1, threshold=0.6),
+            min_duration_on=0.3, min_duration_off=0.5,
+        ))
     if _dia is None:
         import sherpa_onnx as so
 
@@ -143,7 +156,7 @@ def _models():
             min_duration_on=0.3, min_duration_off=0.5,
         ))
         _ext = so.SpeakerEmbeddingExtractor(so.SpeakerEmbeddingExtractorConfig(model=emb))
-    return _dia, _ext
+    return (_dia_multi if multi else _dia), _ext
 
 
 def embed(x):
@@ -157,11 +170,11 @@ def embed(x):
     return v / np.linalg.norm(v)
 
 
-def diarize(x) -> tuple[list[tuple[float, float, int]], dict]:
+def diarize(x, multi: bool = False) -> tuple[list[tuple[float, float, int]], dict]:
     """[(start, end, speaker)], {speaker: 목소리 임베딩}"""
     import numpy as np
 
-    dia, _ = _models()
+    dia, _ = _models(multi)
     turns = [(s.start, s.end, s.speaker) for s in dia.process(x).sort_by_start_time()]
     audio = {}
     for a, b, k in turns:
@@ -210,7 +223,7 @@ def speaker_at(turns, t0: float, t1: float) -> int | None:
     return who
 
 
-def transcribe(path: Path, other: str = "상대") -> list[dict]:
+def transcribe(path: Path, other: str = "상대", meeting: bool = False) -> list[dict]:
     """[{start, speaker, text}] — 화자가 바뀌는 지점마다 한 줄."""
     # 공개 모델이라 토큰 불필요 (만료된 HF 토큰이 있으면 401이 나므로 끔)
     os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
@@ -219,12 +232,12 @@ def transcribe(path: Path, other: str = "상대") -> list[dict]:
     r = mlx_whisper.transcribe(
         str(path), path_or_hf_repo=MODEL, language="ko",
         condition_on_previous_text=False,  # 반복 환각 방지
-        initial_prompt="다음은 한국어 전화 통화 녹음입니다.",
+        initial_prompt="다음은 한국어 회의 녹음입니다." if meeting else "다음은 한국어 전화 통화 녹음입니다.",
         word_timestamps=True,
     )
 
     try:
-        turns, embs = diarize(load_pcm(path))
+        turns, embs = diarize(load_pcm(path), multi=meeting)
     except Exception as e:
         print(f"     ! 화자 분리 실패: {e}", file=sys.stderr)
         turns, embs = [], {}
@@ -237,6 +250,11 @@ def transcribe(path: Path, other: str = "상대") -> list[dict]:
     def label(k):
         if k is None or not turns:
             return ""
+        if meeting:  # 회의: 나, 참석자1, 참석자2 …
+            if me is not None and k == me:
+                return "나"
+            others = [o for o in order if o != me]
+            return f"{other}{others.index(k) + 1}" if k in others else other
         if me is not None:
             return "나" if k == me else other
         return f"화자{order.index(k) + 1}"
@@ -555,6 +573,32 @@ def write_call(call_dir: Path, info: dict, display: str, contact: Path, segs, su
 
 
 # ---------- main ----------
+def catch_up(a, root: Path, call_dir: Path, cdir: Path):
+    """정해진 시간에 몰아서: 실시간으로는 받아 적기만 하고 미뤄 둔 AI 일을 한꺼번에."""
+    import meetings
+    resummarize(call_dir, cdir)
+    st = tasks.load_state(TASK_STATE)
+    cut = datetime.now() - timedelta(days=tasks.KAKAO_DAYS)
+    for p in sorted(call_dir.glob("*.md")):
+        if st["calls"].get(p.stem):
+            continue
+        fm = read_fm(p)
+        try:
+            when = datetime.fromisoformat(str(fm.get("datetime", ""))[:16])
+        except ValueError:
+            continue
+        if when < cut:
+            st["calls"][p.stem] = True
+            continue
+        name = str(fm.get("name", "")).strip()
+        k = tasks.from_call(root, p, tasks.transcript_of(p), when, name if name and name != UNKNOWN else str(fm.get("phone", "")), st)
+        tasks.save_state(TASK_STATE, st)
+        print(f"  할 일 · 통화 {p.stem}: {k}개", flush=True)
+    tasks.save_state(TASK_STATE, st)
+    meetings.run(a.vault, root, TASK_STATE)
+    print(f"카톡 할 일 {tasks.from_kakao(root, TASK_STATE, limit=10_000)}개")
+
+
 def main():
     ap = argparse.ArgumentParser(description="녹취 → 옵시디언 통화 기록")
     ap.add_argument("--src", type=Path, default=RECORD_DIR)
@@ -562,6 +606,8 @@ def main():
     ap.add_argument("--no-summary", action="store_true", help="통화 요약 생략")
     ap.add_argument("--limit", type=int, default=0, help="이번에 처리할 최대 개수")
     ap.add_argument("--redo-tasks", action="store_true", help="모든 통화 노트에서 할 일 다시 찾기 (요약 속 옛 할 일은 뺌)")
+    ap.add_argument("--catch-up", action="store_true", help="미뤄 둔 AI 정리(빈 요약·통화/카톡 할 일·회의록)를 한꺼번에")
+    ap.add_argument("--meetings", action="store_true", help="옵시디언에서 녹음한 회의만 정리")
     ap.add_argument("--kakao-tasks", action="store_true", help="최근 카톡 대화에서 할 일 찾기만")
     ap.add_argument("--resummarize", action="store_true", help="요약이 비어 있는 통화 노트만 요약 채우기")
     ap.add_argument("--kakao-src", type=Path, default=KAKAO_DIR)
@@ -600,6 +646,11 @@ def main():
         return resummarize(call_dir, cdir)
     if a.redo_tasks:
         return tasks.redo_calls(root, call_dir, TASK_STATE, read_fm)
+    if a.catch_up:
+        return catch_up(a, root, call_dir, cdir)
+    if a.meetings:
+        import meetings
+        return meetings.run(a.vault, root, TASK_STATE, no_ai=a.no_summary)
     if a.kakao_tasks:
         return print(f"카톡 할 일 {tasks.from_kakao(root, TASK_STATE, limit=10_000)}개")
 
@@ -649,6 +700,9 @@ def main():
         return
     for f in skipped:
         print(f"  ! 파일명 형식 불일치: {f}", file=sys.stderr)
+
+    import meetings
+    meetings.run(a.vault, root, TASK_STATE, no_ai=a.no_summary)
 
     import kakao
     kakao.run(a.kakao_src, root, a.kakao_me, from_db=a.kakao_db, min_msgs=a.kakao_min)
