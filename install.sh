@@ -55,6 +55,13 @@ step "1/5 도구 설치 (ffmpeg, sqlcipher)"
 for f in ffmpeg sqlcipher; do
   brew list "$f" >/dev/null 2>&1 || brew install "$f"
 done
+# 로컬 AI (요약·할 일·회의록을 맥 안에서) — 선택, 약 4GB
+if ! command -v ollama >/dev/null 2>&1 && ! brew list ollama >/dev/null 2>&1; then
+  yn="$(ask "로컬 AI(Ollama + qwen3.5:4b, 약 4GB)도 설치할까요? 요약·할 일·회의록을 맥 안에서 만들어요. y/N" "N")"
+  if [[ "$yn" =~ ^[Yy] ]]; then
+    brew install ollama && (brew services start ollama || true) && sleep 3 && ollama pull qwen3.5:4b || echo "  ! 로컬 AI 설치를 마치지 못했어요 — 나중에: brew install ollama && ollama pull qwen3.5:4b"
+  fi
+fi
 
 # 2) 파이썬 환경 + 모델
 step "2/5 파이썬 환경·모델 (처음엔 몇 분 걸려요)"

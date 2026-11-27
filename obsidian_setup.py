@@ -2,7 +2,7 @@
 """Rappo(라포) → 옵시디언 볼트 세팅.
 
 볼트에 다음을 넣는다 (이미 있는 노트는 덮어쓰지 않음):
-  <볼트>/<저장 폴더>/통화기록 대시보드.md   최근 연락 · 대화·통화 검색 · 표
+  <볼트>/<저장 폴더>/통화기록 대시보드.md   할 일 · 챙길 날 · 연락처 · 대화·통화 검색 (한 화면)
   <볼트>/<저장 폴더>/통화기록.base          연락처·통화·카톡방 표 (옵시디언 Bases)
   <볼트>/<저장 폴더>/{연락처,통화,카톡}/
   <볼트>/.obsidian/plugins/rappo/          검색·최근 연락 플러그인 (+ data.json 에 저장 폴더)
@@ -78,8 +78,16 @@ def setup(vault: Path, base: str = "", force: bool = False) -> str:
     for name in ("통화기록 대시보드.md", "통화기록.base"):
         dst = root / name
         if dst.exists() and not force:
-            log.append(f"유지: {base}/{name} (이미 있음)")
-            continue
+            old = dst.read_text(encoding="utf-8")
+            # v3 대시보드(한 화면)가 아닌 예전 대시보드는 새것으로 — 예전 것은 볼트 휴지통(.trash)에 남김
+            if name.endswith(".md") and "```연락대시보드" not in old:
+                trash = vault / ".trash"
+                trash.mkdir(exist_ok=True)
+                (trash / "통화기록 대시보드 (이전 버전).md").write_text(old, encoding="utf-8")
+                log.append(f"교체: {base}/{name} (예전 것은 .trash 에)")
+            else:
+                log.append(f"유지: {base}/{name} (이미 있음)")
+                continue
         text = (SRC / "templates" / name).read_text(encoding="utf-8").replace("{{BASE}}", base)
         dst.write_text(text, encoding="utf-8")
         log.append(f"생성: {base}/{name}")
