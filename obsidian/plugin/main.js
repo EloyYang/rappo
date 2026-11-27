@@ -1631,6 +1631,8 @@ module.exports = class RappoSearch extends Plugin {
     this.registerEvent(this.app.vault.on('rename', (f, old) => this.index.files.delete(old)));
   }
   onunload() { if (this.recorder && this.recorder.on) this.recorder.stop(); }
+  // 다른 플러그인(PARA 대시보드 등)에서 부르는 회의 버튼: 녹음 중이면 끝내고, 아니면 새 회의
+  openMeeting(target) { if (this.recorder.on) this.recorder.stop(); else new MeetingModal(this, target || null).open(); }
   async dayNotice() {
     try {
       const { ev } = await this.days.upcoming();
