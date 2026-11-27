@@ -905,13 +905,14 @@ function targetOf(app, file) {
   const ty = fm && String(fm.type || '');
   return ty === 'project' || ty === 'area' ? { name: file.basename, type: ty, status: String(fm.status || ''), path: file.path } : null;
 }
+// name 이 없으면 모든 회의 (PARA 대시보드용)
 function meetingsOf(app, name) {
   const out = [];
   for (const f of app.vault.getMarkdownFiles()) {
     const fm = app.metadataCache.getFileCache(f)?.frontmatter;
     if (!fm || !fm.meeting_audio) continue;
     const links = [].concat(fm.project || [], fm.area || []).map((x) => String(x).replace(/^\[\[|\]\]$/g, '').split('|')[0]);
-    if (links.includes(name)) out.push({ file: f, done: !!fm.meeting_done, summary: String(fm.summary || ''), created: String(fm.created || ''), title: String(fm.title || f.basename) });
+    if (!name || links.includes(name)) out.push({ file: f, done: !!fm.meeting_done, summary: String(fm.summary || ''), created: String(fm.created || ''), title: String(fm.title || f.basename) });
   }
   return out.sort((a, b) => b.file.basename.localeCompare(a.file.basename));
 }
@@ -933,10 +934,12 @@ class MeetingsChild extends MarkdownRenderChild {
     this.btn.onclick = () => rec.on ? rec.stop() : new MeetingModal(this.plugin, target).open();
     if (rec.on) bar.createSpan({ cls: 'ks-muted', text: `녹음 중: ${rec.title}` });
     else helpTip(bar, '녹음을 끝내면 Rappo 가 회의록으로 정리하고, 내가 맡은 일은 할 일 목록에 넣어요.');
-    const list = target ? meetingsOf(app, target.name) : [];
-    if (!list.length) { el.createDiv({ cls: 'ks-hint', text: target ? '아직 이 노트에 연결된 회의가 없어요.' : '프로젝트·영역 노트(type: project/area)에 넣으면 그 노트의 회의가 모여요.' }); return; }
+    // 프로젝트·영역 노트면 그 노트의 회의, 아니면(PARA 대시보드 등) 최근 회의 전체
+    const list = meetingsOf(app, target ? target.name : '');
+    if (!list.length) { el.createDiv({ cls: 'ks-hint', text: target ? '아직 이 노트에 연결된 회의가 없어요.' : '아직 회의가 없어요. 🎙 새 회의로 시작해 보세요.' }); return; }
     const box = el.createDiv({ cls: 'ks-recent' });
-    for (const m of list.slice(0, 20)) {
+    if (!target) box.createDiv({ cls: 'ks-muted', text: '최근 회의' });
+    for (const m of list.slice(0, target ? 20 : 5)) {
       const row = box.createDiv({ cls: 'ks-recent-row' });
       const top = row.createDiv({ cls: 'ks-recent-top' });
       const a = top.createEl('a', { cls: 'ks-recent-name', text: m.title });
