@@ -132,3 +132,17 @@ div.ks-section-head { cursor: default; }
 .ks-help { cursor: pointer; text-decoration: none; color: var(--text-faint); font-size: var(--font-ui-small); }
 .ks-help:hover { color: var(--text-accent); }
 .ks-help-text { flex-basis: 100%; }
+/* v12: 대시보드의 접힌 설명 — 작게, 제목 옆에 (cssclasses: rappo-dash) */
+.rappo-dash .callout[data-callout="info"] { background: transparent; border: 0; box-shadow: none; padding: 0; margin: 0 0 6px;
+  font-size: var(--font-ui-smaller); mix-blend-mode: normal; }
+.rappo-dash .callout[data-callout="info"] .callout-title { padding: 0; gap: 3px; color: var(--text-faint); font-weight: 400; font-size: var(--font-ui-smaller); }
+.rappo-dash .callout[data-callout="info"] .callout-title:hover { color: var(--text-accent); }
+.rappo-dash .callout[data-callout="info"] .callout-icon { --icon-size: 12px; color: inherit; }
+.rappo-dash .callout[data-callout="info"] .callout-fold { padding-inline-start: 0; }
+.rappo-dash .callout[data-callout="info"] .callout-content { padding: 4px 0 2px; color: var(--text-muted); font-size: var(--font-ui-small);
+  border-left: 2px solid var(--background-modifier-border); padding-left: 10px; margin-top: 4px; }
+/* 읽기 모드: 접혀 있을 때는 제목과 같은 줄에 */
+.markdown-preview-view.rappo-dash .markdown-preview-sizer > div:has(> h1, > h2):has(+ div > .callout[data-callout="info"].is-collapsed) { display: inline-block; margin-right: 10px; }
+.markdown-preview-view.rappo-dash .markdown-preview-sizer > div:has(> .callout[data-callout="info"].is-collapsed) { display: inline-block; vertical-align: middle; }
+/* 편집(실시간 미리보기) 모드: 제목 바로 아래 작은 한 줄 */
+.markdown-source-view.rappo-dash .cm-embed-block.cm-callout:has(.callout[data-callout="info"]) { margin-top: -6px; }
