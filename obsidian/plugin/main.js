@@ -811,6 +811,22 @@ function safeName(s) { return String(s || '').replace(/[\\/:*?"<>|#^\[\]]/g, ' '
 function hhmm(d) { return `${pad(d.getHours())}${pad(d.getMinutes())}`; }
 
 // ---------- 회의 녹음 ----------
+function micError(e) {
+  const n = e && e.name;
+  new Notice(n === 'NotFoundError' ? '🎤 연결된 마이크를 찾지 못했어요.'
+    : n === 'NotAllowedError' || n === 'SecurityError'
+      ? '🎤 마이크가 막혀 있어요. 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 Obsidian 을 켜고, 옵시디언을 다시 열어 주세요.'
+      : `🎤 마이크를 열지 못했어요 (${n || e}).`, 12000);
+}
+// 마이크 권한 요청 — 처음 한 번 macOS 가 '허용' 창을 띄우고, 그 뒤 시스템 설정 마이크 목록에 Obsidian 이 생긴다
+async function askMic() {
+  try {
+    const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+    st.getTracks().forEach((t) => t.stop());
+    new Notice('🎤 마이크를 쓸 수 있어요. 회의 녹음 준비 완료!');
+    return true;
+  } catch (e) { micError(e); return false; }
+}
 class Recorder {
   constructor(plugin) {
     this.plugin = plugin; this.app = plugin.app; this.rec = null;
@@ -825,7 +841,7 @@ class Recorder {
     if (this.rec) return;
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } }); }
-    catch (e) { new Notice('마이크를 쓸 수 없어요. 시스템 설정 › 개인정보 보호 및 보안 › 마이크에서 Obsidian 을 켜 주세요.'); return; }
+    catch (e) { micError(e); return; }
     const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
     this.stream = stream; this.chunks = []; this.title = safeName(title) || '회의'; this.target = target; this.t0 = new Date();
     this.rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 64000 } : undefined);
@@ -892,6 +908,7 @@ class MeetingModal extends Modal {
     c.createDiv({ cls: 'ks-muted', text: '녹음은 이 볼트에 저장되고, Rappo 앱이 이 맥 안에서 받아 적어 회의록을 만들어요. 참석자에게 녹음한다고 알려 주세요.' });
     const btns = c.createDiv({ cls: 'ks-guess-btns' });
     const go = btns.createEl('button', { text: '🔴 녹음 시작', cls: 'mod-cta' });
+    btns.createEl('button', { text: '🎤 마이크 확인' }).onclick = () => askMic();
     btns.createEl('button', { text: '취소' }).onclick = () => this.close();
     go.onclick = async () => { this.close(); await this.plugin.recorder.start(title.value || '회의', para.pick() || this.target); };
     setTimeout(() => title.focus(), 50);
@@ -1617,6 +1634,7 @@ module.exports = class RappoSearch extends Plugin {
       ed.setValue(t.replace(/\n*$/, '\n') + '\n## 회의\n```회의\n```\n');
     } });
     this.addCommand({ id: 'meeting', name: 'Rappo 회의 녹음 시작', callback: () => this.recorder.on ? this.recorder.stop() : new MeetingModal(this).open() });
+    this.addCommand({ id: 'mic', name: 'Rappo 마이크 권한 확인', callback: () => askMic() });
     this.addCommand({ id: 'meeting-stop', name: 'Rappo 회의 녹음 끝내기', checkCallback: (chk) => { if (!this.recorder.on) return false; if (!chk) this.recorder.stop(); return true; } });
     this.addRibbonIcon('mic', 'Rappo 회의 녹음', () => this.recorder.on ? this.recorder.stop() : new MeetingModal(this).open());
     this.addCommand({ id: 'task-add', name: 'Rappo 할 일 추가', callback: () => new TaskModal(this, null, (v) => this.tasks.add(v)).open() });
