@@ -130,6 +130,7 @@ def _confirm(task: str, quote: str, text: str) -> bool:
     """두 번째 확인: 이 대화에서 '나'가 정말 그 일을 하기로 했나?"""
     p = (f"다음 대화에서 '나'가 '{task}' 을(를) 직접 하겠다고 말했거나 하기로 확정됐는지 판단해.\n"
          "내가 상대에게 부탁·질문만 한 것, 상대가 할 일, 상대 연락을 기다리는 것, 정하지 않은 제안이면 false.\n"
+         "'나: ~하겠습니다 / ~드리겠습니다 / ~할게요 / 다음 주에 다시 연락드릴게요 / 확정되면 말씀드릴게요'처럼 내가 하겠다고 말했으면 true.\n"
          '설명 없이 JSON 하나만: {"ok": true 또는 false}\n\n---\n' + _around(quote, text))
     try:
         out = llm.generate(p, ctx=4096, temperature=0, timeout=300)
