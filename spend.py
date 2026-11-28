@@ -100,7 +100,7 @@ def save(root: Path, pays: list[dict]) -> int:
     for month, ps in by_month.items():
         f = d / f"{month}.md"
         text = f.read_text(encoding="utf-8") if f.exists() else HEAD.format(month=month)
-        have = set(re.findall(r"\^[pc]([0-9a-f]+)", text))
+        have = set(re.findall(r"\^[pc]([0-9a-fk]+)", text))
         new = [p for p in sorted(ps, key=lambda x: x["dt"]) if p["id"] not in have]
         if not new:
             continue
