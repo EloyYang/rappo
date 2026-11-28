@@ -728,7 +728,58 @@ class Tasks {
     if (!f) { this.cache = []; return this.cache; }
     const text = await this.app.vault.cachedRead(f);
     this.cache = text.split('\n').map((l, i) => parseTask(l, i)).filter(Boolean);
+    // 이어진 PARA 노트의 상태: 노트를 '완료'로 바꾸면 할 일도 끝낸 일로, '진행 중'이면 표시
+    for (const t of this.cache) {
+      const nf = this.noteFile(t);
+      const st = nf && String(this.app.metadataCache.getFileCache(nf)?.frontmatter?.status || '');
+      t.noteStatus = st || '';
+      if (st === '완료' && t.status === ' ') { t.status = 'x'; this.update(t, { status: 'x' }); }
+    }
     return this.cache;
+  }
+  noteFile(t) {
+    const m = /\[\[([^\]|]+)/.exec(t.note || '');
+    return m ? this.app.metadataCache.getFirstLinkpathDest(m[1], this.path) : null;
+  }
+  // 할 일을 끝내거나 되돌리면 이어진 노트 상태도 (완료 / 시작 전)
+  async setDone(t, done) {
+    await this.update(t, { status: done ? 'x' : ' ' });
+    const nf = this.noteFile(t);
+    if (nf) await this.app.fileManager.processFrontMatter(nf, (fm) => { fm.status = done ? '완료' : (fm.status === '완료' ? '시작 전' : fm.status); });
+  }
+  // 할 일을 누르면: 이어진 노트가 있으면 노트, 없으면 출처(통화·카톡·회의)
+  open(t, e) {
+    const nf = this.noteFile(t);
+    const leaf = this.app.workspace.getLeaf(e && (e.metaKey || e.ctrlKey) ? 'tab' : false);
+    if (nf) return leaf.openFile(nf);
+    const lk = /\[\[([^\]|]+)/.exec(t.link || '');
+    if (lk) return this.app.workspace.openLinkText(lk[1], this.path, false);
+    return leaf.openFile(this.file(), { eState: { line: t.line } });
+  }
+  // PARA 를 쓰는 볼트면 할 일마다 '시작 전' 노트 (0. Inbox, 자동 이동 플러그인이 프로젝트 폴더로 옮겨 줌)
+  async makeNote(t) {
+    if (!this.app.vault.getAbstractFileByPath('0. Inbox')) return '';
+    const base = safeName(t.text) || '할 일';
+    let name = base, n = 2;
+    while (this.app.metadataCache.getFirstLinkpathDest(name, '')) name = `${base} (${n++})`;
+    await this.app.vault.create(`0. Inbox/${name}.md`, `---
+type: note
+status: 시작 전
+area: []
+project: []
+end: ${t.due || ''}
+created: ${today()}
+tags: [할일]
+---
+## 할 일
+- [ ] ${t.text}
+
+${t.who ? `- 누구와: ${t.who}\n` : ''}${t.ctx ? `- 무슨 일: ${t.ctx}\n` : ''}${t.link ? `- 출처: ${t.link}\n` : ''}- 할 일 목록: [[할 일]]
+
+## 메모
+
+`);
+    return `[[${name}]]`;
   }
   // 한 줄 바꾸기 (🆔 로 찾고, 없으면 원래 줄 그대로인 곳)
   async update(t, changes) {
@@ -743,6 +794,7 @@ class Tasks {
     });
   }
   async add(t) {
+    if (!t.note) { try { t = { ...t, note: await this.makeNote(t) }; } catch (e) { console.warn('Rappo: 할 일 노트', e); } }
     const line = taskLine({ status: ' ', id: Math.random().toString(16).slice(2, 8), ...t });
     const f = this.file();
     if (f) await this.app.vault.process(f, (text) => text.replace(/\n*$/, '\n') + line + '\n');
@@ -1139,15 +1191,16 @@ class TodoView {
     c.checked = t.status === 'x' || t.status === 'X';
     c.disabled = t.status === '-';
     c.onchange = async () => {
-      await tk.update(t, { status: c.checked ? 'x' : ' ' });
-      await this.syncNote(t, c.checked ? '완료' : '시작 전');
+      await tk.setDone(t, c.checked);
       this.render();
     };
     const body = row.createDiv({ cls: 'ks-todo-body' });
     const top = body.createDiv({ cls: 'ks-todo-top' });
     const pr = top.createEl('a', { cls: `ks-prio is-${{ 높음: 'high', 보통: 'mid', 낮음: 'low' }[t.prio || '보통']}`, text: t.prio || '보통', attr: { 'aria-label': '눌러서 우선순위 바꾸기' } });
     pr.onclick = async () => { const n = { 높음: '보통', 보통: '낮음', 낮음: '높음', '': '높음' }[t.prio]; await tk.update(t, { prio: n }); this.render(); };
-    top.createSpan({ cls: 'ks-todo-text', text: t.text });
+    const tx = top.createEl('a', { cls: 'ks-todo-text rd-link', text: t.text, attr: { 'aria-label': t.note ? '노트 열기 (상세 내용 적기)' : '출처 열기' } });
+    tx.onclick = (e) => tk.open(t, e);
+    if (t.noteStatus === '진행 중') top.createSpan({ cls: 'pa-pill is-doing', text: '진행 중' });
     if (t.due) {
       const d = -daysSince(t.due);
       top.createSpan({ cls: 'ks-dday' + (d < 0 ? ' is-late' : d <= 3 ? ' is-soon' : ''),
@@ -1796,9 +1849,10 @@ class ContactDash {
     for (const t of sorted.slice(0, 8)) {
       const x = rowEl(tb);
       const c = x.createEl('input', { type: 'checkbox' });
-      c.onchange = async () => { await P.tasks.update(t, { status: 'x' }); this.render(); };
+      c.onchange = async () => { await P.tasks.setDone(t, true); this.render(); };
       x.createSpan({ cls: `ks-prio is-${{ 높음: 'high', 보통: 'mid', 낮음: 'low' }[t.prio || '보통']}`, text: t.prio || '보통' });
-      x.createSpan({ cls: 'rd-text', text: t.text });
+      const tx = x.createEl('a', { cls: 'rd-text rd-link', text: t.text }); tx.onclick = (e) => P.tasks.open(t, e);
+      if (t.noteStatus === '진행 중') x.createSpan({ cls: 'pa-pill is-doing', text: '진행 중' });
       if (t.who) x.createSpan({ cls: 'rd-muted', text: t.who });
       if (t.due) dd(x, t.due);
     }
@@ -1856,36 +1910,50 @@ class ContactDash {
     try { data = JSON.parse(await app.vault.adapter.read(`${P.manifest.dir}/calendar-events.json`)); } catch (e) { /* 아직 없음 */ }
     const card = r.createDiv({ cls: 'cal-card' });
     const now = new Date(), td = today();
-    const left = card.createDiv({ cls: 'cal-today' });
-    left.createDiv({ cls: 'cal-wd', text: `${WEEK[now.getDay()]}요일` });
-    left.createDiv({ cls: 'cal-big', text: String(now.getDate()) });
+    const left = card.createDiv({ cls: 'cal-month' });
     const right = card.createDiv({ cls: 'cal-list' });
-    if (!data) {
-      left.createDiv({ cls: 'cal-none', text: '캘린더 연결 전' });
-      right.createDiv({ cls: 'rd-empty', text: 'Rappo 설정 › 정리·AI·캘린더 › 「접근 허용」을 누르면 맥 캘린더(구글 캘린더 포함) 일정이 여기 보여요.' });
-      return;
+    const evs = ((data && data.events) || []).map((e) => ({ ...e, d: e.start.slice(0, 10), de: e.end.slice(0, 10), t: e.allDay ? '' : e.start.slice(11, 16), te: e.allDay ? '' : e.end.slice(11, 16) }));
+    const hm = (t) => `${Number(t.slice(0, 2)) < 12 ? '오전' : '오후'} ${((Number(t.slice(0, 2)) + 11) % 12) + 1}${t.slice(3) === '00' ? '시' : ':' + t.slice(3)}`;
+    // 왼쪽: 이번 달 달력 (일~토, 6주)
+    const y = now.getFullYear(), m = now.getMonth();
+    const mh = left.createDiv({ cls: 'cal-mhead' });
+    mh.createSpan({ cls: 'cal-mtitle', text: `${y}년 ${m + 1}월` });
+    if (!data) mh.createSpan({ cls: 'rd-muted', text: ' · 캘린더 연결 전 (Rappo 설정 › 정리·AI·캘린더 › 접근 허용)' });
+    const grid = left.createDiv({ cls: 'cal-grid' });
+    WEEK.forEach((w, i) => grid.createDiv({ cls: 'cal-wh' + (i === 0 || i === 6 ? ' is-we' : ''), text: w }));
+    const first = new Date(y, m, 1), startD = new Date(y, m, 1 - first.getDay());
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(startD); d.setDate(startD.getDate() + i);
+      const ds = ymd(d), inM = d.getMonth() === m;
+      const cell = grid.createDiv({ cls: 'cal-cell' + (inM ? '' : ' is-out') + (ds === td ? ' is-today' : '') });
+      cell.createDiv({ cls: 'cal-num', text: d.getDate() === 1 && !inM ? `${d.getMonth() + 1}월 1일` : String(d.getDate()) });
+      const day = evs.filter((e) => e.allDay ? (e.d <= ds && ds < (e.de > e.d ? e.de : ymd(new Date(new Date(e.d + 'T12:00:00').getTime() + 86400000)))) : e.d === ds);
+      for (const e of day.slice(0, 2)) {
+        const x = cell.createDiv({ cls: 'cal-chip' + (e.allDay ? ' is-all' : ''), attr: { 'aria-label': `${e.title}${e.allDay ? '' : ' · ' + hm(e.t)}${e.location ? ' · ' + e.location : ''}` } });
+        x.style.setProperty('--c', e.color || '#7c5cff');
+        x.createSpan({ cls: 'cal-chip-t', text: e.title || '(제목 없음)' });
+        if (!e.allDay) x.createSpan({ cls: 'cal-chip-h', text: hm(e.t) });
+      }
+      if (day.length > 2) cell.createDiv({ cls: 'cal-more', text: `+${day.length - 2}` });
     }
-    const evs = (data.events || []).map((e) => ({ ...e, d: e.start.slice(0, 10), t: e.allDay ? '' : e.start.slice(11, 16), te: e.allDay ? '' : e.end.slice(11, 16) }));
+    // 오른쪽: 오늘 + 다가오는 일정
+    const tw = right.createDiv({ cls: 'cal-todayhead' });
+    tw.createSpan({ cls: 'cal-wd', text: `${WEEK[now.getDay()]}요일 ` });
+    tw.createSpan({ cls: 'cal-big', text: String(now.getDate()) });
     const nowHM = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-    const todays = evs.filter((e) => e.d === td && (e.allDay || e.te > nowHM));
-    const ev = (box, e, showDay) => {
+    const ev = (box, e) => {
       const x = box.createDiv({ cls: 'cal-ev' });
       x.style.setProperty('--c', e.color || '#7c5cff');
       x.createDiv({ cls: 'cal-ev-title', text: e.title || '(제목 없음)' });
-      if (!e.allDay) x.createDiv({ cls: 'cal-ev-time', text: `${Number(e.t.slice(0, 2)) < 12 ? '오전' : '오후'} ${((Number(e.t.slice(0, 2)) + 11) % 12) + 1}:${e.t.slice(3)}~${((Number(e.te.slice(0, 2)) + 11) % 12) + 1}:${e.te.slice(3)}` + (e.location ? ` · ${e.location}` : '') });
+      if (!e.allDay) x.createDiv({ cls: 'cal-ev-time', text: `${hm(e.t)}~${hm(e.te)}` + (e.location ? ` · ${e.location}` : '') });
     };
-    if (!todays.length) left.createDiv({ cls: 'cal-none', text: '오늘 더 이상 이벤트 없음' });
-    else for (const e of todays.slice(0, 3)) ev(left, e);
-    const later = evs.filter((e) => e.d > td);
-    if (!later.length) right.createDiv({ cls: 'rd-empty', text: '앞으로 2주 동안 일정이 없어요' });
+    const todays = evs.filter((e) => e.d === td && (e.allDay || e.te > nowHM));
+    if (!todays.length) right.createDiv({ cls: 'cal-none', text: data ? '오늘 더 이상 이벤트 없음' : '' });
+    else for (const e of todays.slice(0, 3)) ev(right, e);
     let last = '', shown = 0;
-    for (const e of later) {
-      if (shown >= 6) break;
-      if (e.d !== last) {
-        last = e.d;
-        const dd = new Date(e.d + 'T12:00:00');
-        right.createDiv({ cls: 'cal-day', text: `${dd.getMonth() + 1}월 ${dd.getDate()}일 ${WEEK[dd.getDay()]}요일` });
-      }
+    for (const e of evs.filter((x) => x.d > td && x.d <= ymd(new Date(now.getTime() + 14 * 86400000)))) {
+      if (shown >= 5) break;
+      if (e.d !== last) { last = e.d; const dd = new Date(e.d + 'T12:00:00'); right.createDiv({ cls: 'cal-day', text: `${dd.getMonth() + 1}월 ${dd.getDate()}일 ${WEEK[dd.getDay()]}요일` }); }
       ev(right, e); shown++;
     }
   }
@@ -2037,8 +2105,8 @@ class PersonView {
       const x = row(tb);
       const c = x.createEl('input', { type: 'checkbox' });
       c.checked = t.status !== ' ';
-      c.onchange = async () => { await P.tasks.update(t, { status: c.checked ? 'x' : ' ' }); this.render(); };
-      x.createSpan({ cls: 'rd-text' + (t.status !== ' ' ? ' rd-done' : ''), text: (t.time ? '📅 ' : '') + t.text });
+      c.onchange = async () => { await P.tasks.setDone(t, c.checked); this.render(); };
+      const tx = x.createEl('a', { cls: 'rd-text rd-link' + (t.status !== ' ' ? ' rd-done' : ''), text: (t.time ? '📅 ' : '') + t.text }); tx.onclick = (e) => P.tasks.open(t, e);
       if (t.due && t.status === ' ') dd(x, t.due);
       else if (t.due) x.createSpan({ cls: 'rd-muted', text: t.due.slice(5).replace('-', '/') });
       const lk = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/.exec(t.link || '');

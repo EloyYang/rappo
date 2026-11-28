@@ -282,7 +282,156 @@ def add(root: Path, items: list[dict], who: str, link: str, label: str) -> int:
     if new:
         text = p.read_text(encoding="utf-8") if p.exists() else HEADER
         p.write_text(text.rstrip("\n") + "\n" + "\n".join(new) + "\n", encoding="utf-8")
+        link_notes(root)
     return len(new)
+
+
+# ---------- 할 일 ↔ PARA '시작 전' 노트 ----------
+# PARA 를 쓰는 볼트(0. Inbox 가 있음)면 남은 할 일마다 노트를 하나씩 만들어 '📝 [[노트]]'로 잇는다.
+# 노트는 PARA 대시보드 할 일 보드의 '시작 전'에 나오고, 상세 내용은 노트에 적는다. (상태는 옵시디언 플러그인이 양쪽으로 맞춤)
+def _vault_of(root: Path) -> Path | None:
+    for p in [root, *root.parents]:
+        if (p / ".obsidian").is_dir():
+            return p
+    return None
+
+
+def _safe_name(s: str) -> str:
+    s = re.sub(r'[\\/:*?"<>|#^\[\]]', " ", s)
+    return re.sub(r"\s+", " ", s).strip()[:60] or "할 일"
+
+
+def link_notes(root: Path) -> int:
+    p = note_path(root)
+    vault = _vault_of(root)
+    if not p.exists() or not vault or not (vault / "0. Inbox").is_dir():
+        return 0
+    lines = p.read_text(encoding="utf-8").split("\n")
+    names = None
+    made = 0
+    for i, line in enumerate(lines):
+        m = re.match(r"^\s*-\s+\[ \]\s+(.+)$", line)
+        if not m or "📝" in line:
+            continue
+        body = m.group(1)
+        text = re.split(r"\s(?:⏫|🔼|🔽|📅|⏰|👤|💬|🔗|📝|🆔)", " " + body)[0].strip()
+        g = lambda mark: (re.search(mark + r"\s*([^⏫🔼🔽📅⏰👤💬🔗📝🆔]+)", body) or [None, ""])[1].strip()
+        due, who, ctx, link = g("📅"), g("👤"), g("💬"), g("🔗")
+        if names is None:
+            names = {q.stem for q in vault.rglob("*.md") if "/." not in str(q)}
+        base = _safe_name(text)
+        name, n = base, 2
+        while name in names:
+            name, n = f"{base} ({n})", n + 1
+        names.add(name)
+        (vault / "0. Inbox" / f"{name}.md").write_text(
+            "---\ntype: note\nstatus: 시작 전\narea: []\nproject: []\n"
+            f"end: {due}\ncreated: {datetime.now():%Y-%m-%d}\ntags: [할일]\n---\n"
+            f"## 할 일\n- [ ] {text}\n\n"
+            + (f"- 누구와: {who}\n" if who else "") + (f"- 무슨 일: {ctx}\n" if ctx else "")
+            + (f"- 출처: {link}\n" if link else "") + "- 할 일 목록: [[할 일]]\n\n## 메모\n\n", encoding="utf-8")
+        lines[i] = re.sub(r"(\s🆔\s)", f" 📝 [[{name}]]\\1", line, count=1) if "🆔" in line else f"{line} 📝 [[{name}]]"
+        made += 1
+    if made:
+        p.write_text("\n".join(lines), encoding="utf-8")
+    return made
+
+
+def _fm_text(p: Path) -> str:
+    t = p.read_text(encoding="utf-8", errors="ignore")
+    m = re.match(r"^---\n(.*?)\n---", t, re.S)
+    return m.group(1) if m else ""
+
+
+def para_targets(vault: Path) -> dict:
+    """{'project': [이름…], 'area': [이름…]} — 끝나거나 보관된 것 빼고"""
+    out = {"project": [], "area": []}
+    for p in vault.rglob("*.md"):
+        rel = str(p.relative_to(vault))
+        if rel.startswith(("4. Archive", ".", "_")):
+            continue
+        fm = _fm_text(p)
+        ty = (re.search(r"^type:\s*(\S+)", fm, re.M) or [None, ""])[1]
+        st = (re.search(r"^status:\s*(.*)$", fm, re.M) or [None, ""])[1].strip().strip('"')
+        if ty == "project" and st not in ("완료", "중단"):
+            out["project"].append(p.stem)
+        elif ty == "area" and st != "아카이브":
+            out["area"].append(p.stem)
+    return out
+
+
+def _new_para(vault: Path, kind: str, name: str) -> str:
+    """새 프로젝트·영역 노트 (템플릿이 있으면 그걸로) — '1. Projects/이름/이름.md' 처럼"""
+    name = _safe_name(name)[:40]
+    folder = vault / ("1. Projects" if kind == "project" else "2. Areas") / name
+    folder.mkdir(parents=True, exist_ok=True)
+    f = folder / f"{name}.md"
+    if not f.exists():
+        tpl = vault / "_Templates" / ("프로젝트.md" if kind == "project" else "영역.md")
+        body = tpl.read_text(encoding="utf-8") if tpl.exists() else \
+            f"---\ntype: {kind}\nstatus: {'시작 안 함' if kind == 'project' else '영역'}\ncreated: {{{{date}}}}\n---\n"
+        body = re.sub(r"\{\{date(:[^}]*)?\}\}", datetime.now().strftime("%Y-%m-%d"), body).replace("{{title}}", name)
+        if kind == "project":
+            body = body.replace("status: 시작 안 함", "status: 진행 중", 1)
+        f.write_text(body, encoding="utf-8")
+    return name
+
+
+def match_para(root: Path, limit: int = 20) -> int:
+    """할 일 노트(0. Inbox, #할일, 프로젝트·영역 비어 있음)를 알맞은 프로젝트·영역에 잇는다.
+    맞는 게 없으면 새 프로젝트나 영역을 만든다. (자동 이동 플러그인이 노트를 그 폴더로 옮김)"""
+    vault = _vault_of(root)
+    if not vault or not (vault / "0. Inbox").is_dir():
+        return 0
+    notes = []
+    for p in sorted((vault / "0. Inbox").glob("*.md")):
+        fm = _fm_text(p)
+        if "할일" in fm and re.search(r"^area:\s*\[\]\s*$", fm, re.M) and re.search(r"^project:\s*\[\]\s*$", fm, re.M) \
+                and "para_match:" not in fm:
+            notes.append(p)
+    if not notes:
+        return 0
+    tg = para_targets(vault)
+    done = 0
+    for p in notes[:limit]:
+        body = p.read_text(encoding="utf-8")
+        info = re.sub(r"^---.*?---", "", body, flags=re.S)[:600]
+        prompt = (
+            "할 일 노트를 PARA 의 알맞은 곳 하나에 넣으려고 해.\n"
+            f"할 일 노트 제목: {p.stem}\n내용:\n{info}\n\n"
+            f"기존 프로젝트(끝이 있는 일): {', '.join(tg['project']) or '없음'}\n"
+            f"기존 영역(계속 챙기는 분야): {', '.join(tg['area']) or '없음'}\n\n"
+            "기존 것 중 분명히 관련 있는 게 있으면 그 이름을 그대로 골라. 없으면 새로 만들 이름을 짧게(2~10자) 지어. "
+            "기간이 있는 일·행사·납품이면 project, 생활·관계·건강·돈처럼 계속 챙기는 분야면 area.\n"
+            '설명 없이 JSON 하나만: {"type":"project|area","name":"","new":true 또는 false}'
+        )
+        try:
+            out = llm.generate(prompt, ctx=4096, temperature=0, timeout=300)
+            j = json.loads(re.search(r"\{.*\}", out, re.S).group(0))
+        except Exception as e:
+            print(f"  ! PARA 연결 실패 ({p.stem}): {e}", file=sys.stderr)
+            continue
+        kind = "area" if j.get("type") == "area" else "project"
+        name = str(j.get("name", "")).strip().strip("[]")
+        if not name:
+            continue
+        exist = {n.replace(" ", "").lower(): n for n in tg[kind]}
+        other = {n.replace(" ", "").lower(): n for n in tg["area" if kind == "project" else "project"]}
+        key = name.replace(" ", "").lower()
+        if key in exist:
+            name, made = exist[key], False
+        elif key in other:   # 종류만 틀린 경우
+            kind = "area" if kind == "project" else "project"
+            name, made = other[key], False
+        else:
+            name, made = _new_para(vault, kind, name), True
+            tg[kind].append(name)
+        body = re.sub(rf"^{kind}:\s*\[\]\s*$", f'{kind}:\n  - "[[{name}]]"', body, count=1, flags=re.M)
+        body = body.replace("\ntags: [할일]", f"\ntags: [할일]\npara_match: {'new' if made else 'auto'}", 1)
+        p.write_text(body, encoding="utf-8")
+        done += 1
+        print(f"  할 일 노트 → {'새 ' if made else ''}{'프로젝트' if kind == 'project' else '영역'} [{name}]: {p.stem[:30]}", flush=True)
+    return done
 
 
 # ---------- 상태 (이미 본 통화·카톡 묶음) ----------

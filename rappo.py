@@ -683,6 +683,13 @@ def main():
 
     import kakao
     kakao.run(a.kakao_src, root, a.kakao_me, from_db=a.kakao_db, min_msgs=a.kakao_min)
+    # 할 일 ↔ PARA 노트 (옵시디언에서 직접 추가한 할 일도)
+    try:
+        tasks.link_notes(root)
+        if not a.no_summary:   # AI 를 쓸 때만: 할 일 노트를 알맞은 프로젝트·영역에
+            tasks.match_para(root)
+    except Exception as e:
+        print(f"  ! 할 일 노트 만들기 실패: {e}", file=sys.stderr)
     # 💳 소비: 카드 이용내역 파일(소비/가져오기)과 카드 승인 문자
     import spend
     try:
