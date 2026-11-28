@@ -2291,9 +2291,11 @@ class PersonModal extends Modal {
 
 // ---------- 💳 소비: 현대카드 승인 문자·이용내역 파일에서 모은 내역 (```소비```) ----------
 const PAY_RE = /^\s*-\s+(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) · (-?[\d,]+)원 · (.*?) · (.*?) · (.*?)(?:\s+#(\S+))?(?:\s+\^([pc])([0-9a-fk]+))?\s*$/;
-const CAT_LABEL = { 배달외식: '🍔 식사·배달', 식료품: '🥬 식료품', 생활용품: '🧻 생활용품', 패션뷰티: '👗 패션·뷰티', 사치기호: '💎 사치·기호',
-  쇼핑: '🛍 쇼핑(기타)', 교통: '🚕 교통', 구독디지털: '💻 구독·디지털', 공과금통신: '🧾 공과금·통신', 여가문화: '🎬 여가·문화',
-  의료건강: '💊 의료·건강', 장보기생활: '🛒 장보기·생활', 기타: '📦 기타' };
+const CAT_LABEL = { 생활: '🏠 생활', 의료: '💊 의료', 사치: '💎 사치', 여가: '🎬 여가', 사교: '🍻 사교', 기타: '📦 기타' };
+// 예전 분류 이름 → 새 분류 (노트의 #태그·설정에 남아 있는 것도 새 이름으로 보여 줌)
+const OLD_CAT = { 배달외식: '생활', 식료품: '생활', 생활용품: '생활', 장보기생활: '생활', 쇼핑: '생활', 교통: '생활', 구독디지털: '생활',
+  공과금통신: '생활', 패션뷰티: '사치', 사치기호: '사치', 여가문화: '여가', 의료건강: '의료' };
+const newCat = (c) => OLD_CAT[c] || c;
 // 여러 가지를 파는 곳 — 건마다 무엇을 샀는지 달라서 '분류 확인'을 권한다
 const MIXED_RE = /쿠팡|네이버|11번가|G마켓|지마켓|옥션|SSG|알리|테무|롯데온|위메프|티몬|카카오페이|토스|페이코|다이소/;
 function askText(app, title, placeholder) {
@@ -2331,7 +2333,7 @@ class Spend {
           src: m[8] || 'p', key: `${m[8] || 'p'}${m[9] || ''}`, file: f, line: i, raw: l });
         const it = out[out.length - 1];
         // 분류 정하는 순서: 이 결제만 정한 것 > 이 가게 전체로 정한 것 > 자동 분류
-        it.cat = byId[it.key] || map[merchant] || m[7] || '기타';
+        it.cat = newCat(byId[it.key] || map[merchant] || m[7] || '기타');
         it.check = !byId[it.key] && !map[merchant] && MIXED_RE.test(merchant);
       });
     }
@@ -2376,7 +2378,7 @@ class Spend {
       }).join('\n'));
     }
   }
-  cats() { return [...Object.keys(CAT_LABEL).filter((k) => k !== '장보기생활'), ...(this.plugin.data.customCats || [])]; }
+  cats() { return [...Object.keys(CAT_LABEL), ...(this.plugin.data.customCats || [])]; }
 
 }
 
