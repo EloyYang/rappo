@@ -2099,22 +2099,22 @@ class ContactDash {
 }
 // 캘린더 일정 추가·고치기·지우기 — calendar-edits.json 에 적으면 Rappo 앱이 맥 캘린더(구글 캘린더 포함)에 반영
 class EventModal extends Modal {
-  constructor(plugin, ev, date, data, done) { super(plugin.app); this.plugin = plugin; this.ev = ev; this.date = date; this.data = data || {}; this.done = done; }
+  constructor(plugin, ev, date, data, done, pre) { super(plugin.app); this.plugin = plugin; this.ev = ev; this.date = date; this.data = data || {}; this.done = done; this.pre = pre || {}; }
   onOpen() {
-    const e = this.ev, c = this.contentEl, editable = !e || e.editable !== false;
+    const e = this.ev, c = this.contentEl, editable = !e || e.editable !== false, pre = this.pre;
     this.titleEl.setText(e ? (editable ? '일정 고치기' : '일정 보기') : '새 일정');
     c.addClass('ks-task-form');
     const row = (label, el) => { const r = c.createDiv({ cls: 'ks-form-row' }); r.createEl('label', { text: label }); r.appendChild(el); return el; };
-    const title = row('제목', createEl('input', { type: 'text', value: e ? e.title : '' }));
+    const title = row('제목', createEl('input', { type: 'text', value: e ? e.title : pre.title || '' }));
     const date = row('날짜', createEl('input', { type: 'date', value: e ? e.d : this.date }));
     const allWrap = createDiv(); const all = allWrap.createEl('input', { type: 'checkbox' }); allWrap.appendText(' 하루 종일');
-    all.checked = e ? !!e.allDay : false;
+    all.checked = e ? !!e.allDay : !!pre.allDay;
     row('', allWrap);
-    const st = row('시작', createEl('input', { type: 'time', value: e && !e.allDay ? e.t : '10:00' }));
-    const en = row('끝', createEl('input', { type: 'time', value: e && !e.allDay ? e.te : '11:00' }));
-    const loc = row('장소', createEl('input', { type: 'text', value: e ? e.location || '' : '' }));
+    const st = row('시작', createEl('input', { type: 'time', value: e && !e.allDay ? e.t : pre.start || '10:00' }));
+    const en = row('끝', createEl('input', { type: 'time', value: e && !e.allDay ? e.te : pre.end || '11:00' }));
+    const loc = row('장소', createEl('input', { type: 'text', value: e ? e.location || '' : pre.location || '' }));
     const memo = row('메모', createEl('textarea', { attr: { rows: 3 } }));
-    memo.value = e ? (e.notes || '').replace(/\n— Rappo$/, '') : '';
+    memo.value = e ? (e.notes || '').replace(/\n— Rappo$/, '') : pre.notes || '';
     let calSel = null;
     if (!e && (this.data.calendars || []).length) {
       calSel = row('캘린더', createEl('select', { cls: 'dropdown' }));
@@ -2136,6 +2136,7 @@ class EventModal extends Modal {
           end: all.checked ? `${next(date.value)}T00:00` : `${date.value}T${en.value || st.value || '11:00'}`,
           location: loc.value, notes: memo.value, calId: calSel ? calSel.value : undefined };
         await this.push(op);
+        if (this.pre.onSaved) this.pre.onSaved(op);
         new Notice(e ? '📅 일정을 고쳤어요 (곧 캘린더에 반영)' : '📅 일정을 넣었어요 (곧 캘린더에 반영)');
         this.close();
       };
@@ -3095,6 +3096,40 @@ async function calContext(P, q, terms, people) {
   return { text, n: list.length, from, to, range };
 }
 
+// ---------- AI: 캘린더에 일정 넣기 ----------
+// '캘린더에 추가해줘·일정 잡아줘·등록해줘' 같은 요청
+const CAL_ADD = /(캘린더|달력|일정|스케줄|스케쥴)[^?？]{0,30}?(추가|넣어|넣을|등록|기록|잡아|적어|저장|만들어|올려)|(추가|등록|기록)[^?？]{0,12}?(캘린더|달력)/;
+// 질문 속 날짜·시간 (작은 모델이 날짜를 틀리게 계산해서 글에 적힌 것은 직접 읽는다)
+function kDate(s, base) {
+  const b = base || new Date(), pad = (n) => String(n).padStart(2, '0');
+  const mk = (y, m, d) => { const x = new Date(y, m - 1, d); return x.getMonth() === m - 1 ? `${y}-${pad(m)}-${pad(d)}` : ''; };
+  let m = s.match(/(\d{4})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})/) || s.match(/(\d{2,4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+  if (m) { let y = +m[1]; if (y < 100) y += 2000; return mk(y, +m[2], +m[3]); }
+  m = s.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/) || s.match(/(?<![\d:])(\d{1,2})\/(\d{1,2})(?![\d:])/);
+  if (m) {
+    let y = b.getFullYear(); if (/내년/.test(s)) y += 1;
+    let d = mk(y, +m[1], +m[2]);
+    if (d && !/내년|올해|이번/.test(s) && new Date(d + 'T23:59') < new Date(b.getFullYear(), b.getMonth(), b.getDate() - 7)) d = mk(y + 1, +m[1], +m[2]);
+    return d;
+  }
+  const rel = { 오늘: 0, 내일: 1, 모레: 2, 글피: 3 };
+  for (const k in rel) if (s.includes(k)) { const x = new Date(b); x.setDate(x.getDate() + rel[k]); return ymd(x); }
+  return '';
+}
+function kTime(s) {
+  const pad = (n) => String(n).padStart(2, '0');
+  let m = s.match(/(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)/);
+  if (m) return `${pad(+m[1])}:${m[2]}`;
+  m = s.match(/(오전|오후|아침|점심|저녁|밤|새벽)?\s*(\d{1,2})\s*시\s*(반|(\d{1,2})\s*분)?/);
+  if (!m) return '';
+  let h = +m[2]; const pm = /오후|저녁|밤/.test(m[1] || '') || (m[1] === '점심' && h < 6);
+  if (pm && h < 12) h += 12; else if (!m[1] && h >= 1 && h <= 6) h += 12;   // '3시' 처럼만 말하면 오후로
+  if (h > 23) return '';
+  return `${pad(h)}:${m[3] === '반' ? '30' : pad(+(m[4] || 0))}`;
+}
+const isCalAdd = (q) => CAL_ADD.test(q) || (!!kDate(q) && /(잡아|등록해|넣어)\s*(줘|주세요|줄래|줄 수)/.test(q));
+const addHour = (t) => { const [h, mi] = t.split(':').map(Number); return `${String(Math.min(23, h + 1)).padStart(2, '0')}:${String(mi).padStart(2, '0')}`; };
+
 class AIView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf); this.plugin = plugin; this.mode = 'ask'; this.logs = false; this.useNote = false; this.useVault = true; this.busy = null;
@@ -3235,6 +3270,7 @@ class AIView extends ItemView {
       s.createSpan({ cls: 'rai-muted', text: '📅 캘린더 ' });
       s.createSpan({ cls: 'rai-src-link', text: `일정 ${t.cal.n}개${t.cal.from ? ` · ${t.cal.from.slice(5).replace('-', '/')}${t.cal.to && t.cal.to !== t.cal.from ? '~' + t.cal.to.slice(5).replace('-', '/') : ''}` : ''}` });
     }
+    if (t.ev) await this.evCard(el, t);
     const acts = el.createDiv({ cls: 'rai-acts' });
     const btn = (x, fn, cta) => { const b = acts.createEl('button', { cls: cta ? 'mod-cta' : '', text: x }); b.onclick = fn; };
     if (t.mode === 'write') {
@@ -3243,6 +3279,39 @@ class AIView extends ItemView {
     }
     btn('복사', () => { navigator.clipboard.writeText(t.a); new Notice('복사했어요'); });
     if (t.mode === 'ask') btn('📝 이 답을 노트로', () => this.saveNew(`# ${t.q.replace(/[?？]\s*$/, '')}\n\n${t.a}`));
+  }
+  // 캘린더에 넣을 일정 확인 칸: 누르기 전에는 캘린더에 쓰지 않는다
+  async evCard(el, t) {
+    const P = this.plugin, ev = t.ev;
+    let data = null;
+    try { data = JSON.parse(await this.app.vault.adapter.read(`${P.manifest.dir}/calendar-events.json`)); } catch (e) { /* 앱이 아직 안 씀 */ }
+    const box = el.createDiv({ cls: 'rai-ev' });
+    const W = '일월화수목금토';
+    const dd = ev.date ? new Date(ev.date + 'T12:00:00') : null;
+    box.createDiv({ cls: 'rai-ev-t', text: `📅 ${ev.title || '(제목 없음)'}` });
+    box.createDiv({ cls: 'rai-ev-d', text: dd ? `${dd.getFullYear()}년 ${dd.getMonth() + 1}월 ${dd.getDate()}일(${W[dd.getDay()]}) ${ev.allDay ? '하루 종일' : `${ev.start}~${ev.end}`}` : '날짜를 못 정했어요 — 고쳐서 넣기로 정해 주세요' });
+    if (ev.location) box.createDiv({ cls: 'rai-muted', text: `📍 ${ev.location}` });
+    const cals = (data && data.calendars) || [];
+    const calName = (cals.find((c) => c.id === (data && data.defaultCal)) || cals[0] || {}).title;
+    if (calName) box.createDiv({ cls: 'rai-muted', text: `캘린더: ${calName}` });
+    const row = box.createDiv({ cls: 'rai-acts' });
+    const done = (op) => { t.evDone = { title: op.title, date: (op.start || '').slice(0, 10) }; this.saveSess(); row.empty(); row.createSpan({ cls: 'rai-ev-ok', text: '✓ 캘린더에 넣었어요 (곧 맥·구글 캘린더에 반영)' }); };
+    if (t.evDone) { row.createSpan({ cls: 'rai-ev-ok', text: '✓ 캘린더에 넣었어요' }); return; }
+    if (!data) { row.createSpan({ cls: 'rai-muted', text: 'Rappo 앱의 캘린더 연결을 켜면 여기서 바로 넣을 수 있어요' }); return; }
+    const pre = { ...ev, onSaved: done };
+    if (ev.date && ev.title) {
+      const go = row.createEl('button', { cls: 'mod-cta', text: '📅 캘린더에 넣기' });
+      go.onclick = async () => {
+        const next = (d) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + 1); return ymd(x); };
+        const op = { op: 'add', title: ev.title, allDay: !!ev.allDay,
+          start: ev.allDay ? `${ev.date}T00:00` : `${ev.date}T${ev.start}`, end: ev.allDay ? `${next(ev.date)}T00:00` : `${ev.date}T${ev.end}`,
+          location: ev.location || '', notes: ev.notes || '', calId: data.defaultCal || undefined };
+        await new EventModal(P, null, ev.date, data, null).push(op);
+        new Notice('📅 일정을 넣었어요 (곧 캘린더에 반영)');
+        done(op);
+      };
+    }
+    row.createEl('button', { text: '✏️ 고쳐서 넣기' }).onclick = () => new EventModal(P, null, ev.date || today(), data, null, pre).open();
   }
   async send() {
     const q = this.ta.value.trim();
@@ -3307,7 +3376,7 @@ class AIView extends ItemView {
         try { cal = await calContext(P, `${q} ${mode === 'ask' && prev.length ? prev[prev.length - 1].q : ''}`, terms, convo ? convo.people : []); } catch (e) { console.warn('Rappo AI: 캘린더', e); }
         if (cal && !cal.n) cal = null;
       }
-      if (mode === 'ask' && !hits.length && !convo && !cal) {
+      if (mode === 'ask' && !hits.length && !convo && !cal && !isCalAdd(q)) {
         t.a = '관련된 노트나 대화를 찾지 못했어요. 다른 낱말로 물어봐 주세요.' + (this.logs ? '' : ' (대화·통화 기록까지 찾으려면 아래 💬 를 켜 주세요)'); t.err = true;
         st.remove(); ans.setText(t.a); return;
       }
@@ -3315,6 +3384,29 @@ class AIView extends ItemView {
       const ksrc = cal ? `\n[캘린더 일정 — 맥·구글 캘린더${cal.range ? `, 질문의 기간: ${cal.range}` : ''}. 날짜·요일·시간은 아래 줄에 적힌 그대로 옮겨 써 (직접 계산하지 마)]\n${cal.text}\n` : '';
       const csrc = convo ? `\n[대화·통화 기록 — '나'는 사용자 본인${convo.people.length ? `, 질문 속 사람: ${convo.people.map((p) => p.name).join(', ')}` : ''}. 단체방 이름과 날짜를 함께 봐]\n${convo.text}\n` : '';
       const hblock = prev.length ? `\n[앞 대화 — 새 질문이 이걸 이어 묻는 것이면 같은 사람·주제로 이어서 답해. '거기·그 사람·그럼'은 앞 대화에서 말한 것을 가리켜]\n${history}\n` : '';
+      // 캘린더에 넣어 달라는 요청: 답 대신 넣을 일정을 정리해서 확인 칸으로
+      if (mode === 'ask' && isCalAdd(q)) {
+        st.setText('넣을 일정 정리하는 중…');
+        const ep = `오늘은 ${today()}. 사용자가 캘린더에 일정을 넣어 달라고 해. 아래 요청·앞 대화·근거를 보고 넣을 일정 하나를 정해.\n` +
+          `설명 없이 JSON 하나만: {"title":"짧은 일정 제목(예: 치과 정기검진)","date":"YYYY-MM-DD 또는 빈 문자열","start":"HH:MM 또는 빈 문자열","end":"HH:MM 또는 빈 문자열","location":"","notes":"근거 한 줄"}\n` +
+          `제목은 요청에 나온 말로 짧게 (요청에 없는 내용을 덧붙이지 마). '캘린더·추가·해줘' 같은 말은 빼. 요청에 날짜가 있으면 그 날짜를 써. 날짜가 요청에 없으면 근거·앞 대화에서 찾고, 그래도 모르면 빈 문자열.\n${hblock}\n${src}${csrc}${ksrc}\n요청: ${q}`;
+        let ev = {};
+        try { const raw = await AI.chat([{ role: 'user', content: ep }], { max: 220, temp: 0, signal: ctl.signal, status: (s) => st.setText(s) }); const m = raw.match(/\{[\s\S]*\}/); ev = m ? JSON.parse(m[0]) : {}; } catch (e) { if (e.name === 'AbortError') throw e; }
+        const clean = (x) => String(x || '').replace(/\s+/g, ' ').trim();
+        const title = clean(ev.title).replace(/(을|를)?\s*(캘린더|달력|일정)(에|으로|로)?\s*(추가|등록|넣).*$/, '').replace(/\s*(일정|스케줄|스케쥴)$/, '').trim()
+          || clean(q.replace(CAL_ADD, '').replace(/(을|를|에|로|으로)?\s*(해\s*줘|해\s*주세요|줘|주세요)[.!]?$/, ''));
+        const date = kDate(q) || (/^\d{4}-\d{2}-\d{2}$/.test(clean(ev.date)) ? clean(ev.date) : '');
+        const tq = kTime(q.replace(/\d{2,4}\s*년|\d{1,2}\s*월|\d{1,2}\s*일/g, ' '));
+        const start = tq || (/^\d{2}:\d{2}$/.test(clean(ev.start)) ? clean(ev.start) : '');
+        const end = start ? (/^\d{2}:\d{2}$/.test(clean(ev.end)) && clean(ev.end) > start && !tq ? clean(ev.end) : addHour(start)) : '';
+        t.ev = { title, date, start, end, allDay: !start, location: clean(ev.location) && q.includes(clean(ev.location)) ? clean(ev.location) : '', notes: `Rappo AI: ${q}`.slice(0, 200) };
+        const W = '일월화수목금토', dd = date ? new Date(date + 'T12:00:00') : null;
+        t.a = date ? `이 일정을 캘린더에 넣을게요. 맞으면 **📅 캘린더에 넣기**를, 고칠 게 있으면 **✏️ 고쳐서 넣기**를 눌러 주세요.\n\n- ${title} · ${dd.getFullYear() !== new Date().getFullYear() ? dd.getFullYear() + '년 ' : ''}${dd.getMonth() + 1}월 ${dd.getDate()}일(${W[dd.getDay()]})${start ? ` ${start}` : ' 하루 종일'}`
+          : `캘린더에 넣을 날짜를 찾지 못했어요. **✏️ 고쳐서 넣기**에서 날짜를 정하거나, "7월 22일에 넣어줘"처럼 날짜를 알려 주세요.`;
+        st.remove();
+        await this.finish(el, t);
+        return;
+      }
       const lastW = [...prev].reverse().find((x) => x.mode === 'write');
       const day = today();
       const qline = q;

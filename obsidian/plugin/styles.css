@@ -395,3 +395,12 @@ div.ks-section-head { cursor: default; }
 .rai-hist-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rai-hist-del { color: var(--text-faint); cursor: pointer; padding: 2px 6px; text-decoration: none; }
 .rai-hist-del:hover { color: var(--color-red); }
+
+/* v28.3 AI: 글자 드래그·복사, 일정 넣기 칸 */
+.rai-log, .rai-log * { user-select: text; -webkit-user-select: text; }
+.rai-log button, .rai-log .rai-src-link { user-select: none; -webkit-user-select: none; }
+.rai-a, .rai-q { cursor: text; }
+.rai-ev { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 9px 12px; display: flex; flex-direction: column; gap: 4px; }
+.rai-ev-t { font-weight: 600; font-size: 13.5px; }
+.rai-ev-d { font-size: 13px; }
+.rai-ev-ok { font-size: 12px; color: var(--color-green); }
