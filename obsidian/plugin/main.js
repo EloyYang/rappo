@@ -2197,7 +2197,9 @@ class PersonView {
     const tile = (label, value, hint) => { const t = kpi.createDiv({ cls: 'rd-kpi' }); t.createDiv({ cls: 'rd-kpi-value', text: String(value) }); t.createDiv({ cls: 'rd-kpi-label', text: label }); if (hint) t.createDiv({ cls: 'rd-kpi-hint', text: hint }); };
     tile('통화', st.calls, '');
     tile('카톡', st.talk.toLocaleString(), st.group ? `단체방 발언 ${st.group.toLocaleString()}` : '');
-    tile('연락한 날', st.days.size, st.first ? `${st.first.slice(0, 7)}부터` : '');
+    const lastGap = st.last ? daysSince(st.last) : null;
+    tile('마지막 연락', lastGap === null ? '—' : lastGap === 0 ? '오늘' : lastGap === 1 ? '어제' : `${lastGap}일 전`,
+      st.last ? `${st.last.replace(/-/g, '.')} · 연락한 날 ${st.days.size}일` : '');
     tile('남은 약속·할 일', tasks.filter((t) => t.status === ' ').length, `끝낸 일 ${tasks.filter((t) => /[xX]/.test(t.status)).length}`);
 
     const section = (parent, title, count) => {
