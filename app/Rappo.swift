@@ -568,11 +568,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var added = ud.dictionary(forKey: "calAdded") as? [String: String] ?? [:]
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
         var n = 0
+        var sigs = ud.dictionary(forKey: "calSig") as? [String: String] ?? [:]
         for e in list {
-            guard let id = e["id"] as? String, added[id] == nil, let title = e["title"] as? String, let ds = e["date"] as? String else { continue }
+            guard let id = e["id"] as? String, let title = e["title"] as? String, let ds = e["date"] as? String else { continue }
             let time = e["time"] as? String ?? ""
+            let sig = "\(title)|\(ds)|\(time)"
             f.dateFormat = time.isEmpty ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm"
             guard let start = f.date(from: time.isEmpty ? ds : "\(ds) \(time)") else { continue }
+            // 이미 넣은 일정: 할 일(노트)이 바뀌었으면 캘린더 일정도 고친다 (지우지는 않음)
+            if let eid = added[id] {
+                if (e["update"] as? Bool) == true, sigs[id] != nil, sigs[id] != sig, let ev = events.event(withIdentifier: eid) {
+                    ev.title = title
+                    if time.isEmpty { ev.isAllDay = true; ev.startDate = start; ev.endDate = start }
+                    else { ev.isAllDay = false; ev.startDate = start; ev.endDate = start.addingTimeInterval(3600) }
+                    do { try events.save(ev, span: .thisEvent, commit: false); n += 1 } catch { NSLog("Rappo 일정 고치기 실패: \(error)") }
+                }
+                sigs[id] = sig
+                continue
+            }
+            sigs[id] = sig
             let ev = EKEvent(eventStore: events)
             ev.calendar = cal
             ev.title = title
@@ -598,6 +612,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if n > 0 { try? events.commit() }
         ud.set(added, forKey: "calAdded")
+        ud.set(sigs, forKey: "calSig")
         // 플러그인이 '캘린더에 들어감'을 보여 줄 수 있게
         let done: [String: Any] = ["calendar": calLabel(cal), "ids": Array(added.keys), "removed": removed]
         if let out = try? JSONSerialization.data(withJSONObject: done, options: [.prettyPrinted]) {

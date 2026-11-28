@@ -412,12 +412,27 @@ def ensure_contact(cdir: Path, idx: dict, phone: str, name: str) -> tuple[Path, 
         "memo: \"\"\n"
         "---\n"
         f"# {name or phone}\n\n"
+        "## 라포\n```사람\n```\n\n"
         "## 메모\n\n\n"
         "## 통화 기록\n\n<!-- calls:start -->\n\n<!-- calls:end -->\n",
         encoding="utf-8",
     )
     idx[phone] = p
     return p, name or phone
+
+
+def person_blocks(cdir: Path) -> int:
+    """연락처 노트마다 '## 라포 ```사람```' 칸 — 그 사람과의 약속·할 일·챙길 날·통화·카톡 히스토리가 보인다."""
+    n = 0
+    for p in cdir.glob("*.md"):
+        t = p.read_text(encoding="utf-8")
+        if "```사람" in t:
+            continue
+        block = "## 라포\n```사람\n```\n\n"
+        t = t.replace("## 메모", block + "## 메모", 1) if "## 메모" in t else t.rstrip("\n") + "\n\n" + block
+        p.write_text(t, encoding="utf-8")
+        n += 1
+    return n
 
 
 def relink(root: Path, renames: dict[str, str]):
@@ -683,8 +698,9 @@ def main():
 
     import kakao
     kakao.run(a.kakao_src, root, a.kakao_me, from_db=a.kakao_db, min_msgs=a.kakao_min)
-    # 할 일 ↔ PARA 노트 (옵시디언에서 직접 추가한 할 일도)
+    # 할 일 ↔ PARA 노트 (옵시디언에서 직접 추가한 할 일도), 연락처 노트의 라포 칸
     try:
+        person_blocks(cdir)
         tasks.link_notes(root)
         if not a.no_summary:   # AI 를 쓸 때만: 할 일 노트를 알맞은 프로젝트·영역에
             tasks.match_para(root)

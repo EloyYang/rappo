@@ -315,3 +315,4 @@ div.ks-section-head { cursor: default; }
 .cal-chip:hover, .cal-ev:hover { filter: brightness(1.08); outline: 1px solid var(--c); }
 .cal-mhead { display: flex; align-items: baseline; gap: 8px; }
 .ks-task-form textarea { width: 100%; resize: vertical; }
+.rd-person-inline { border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 12px 14px; }

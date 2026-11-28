@@ -728,12 +728,27 @@ class Tasks {
     if (!f) { this.cache = []; return this.cache; }
     const text = await this.app.vault.cachedRead(f);
     this.cache = text.split('\n').map((l, i) => parseTask(l, i)).filter(Boolean);
-    // 이어진 PARA 노트의 상태: 노트를 '완료'로 바꾸면 할 일도 끝낸 일로, '진행 중'이면 표시
+    // 이어진 PARA 노트가 바뀌면 할 일도 그대로: 상태(완료·중단·되돌림), 마감(end), 할 일 문장(노트의 첫 체크박스)
     for (const t of this.cache) {
       const nf = this.noteFile(t);
-      const st = nf && String(this.app.metadataCache.getFileCache(nf)?.frontmatter?.status || '');
-      t.noteStatus = st || '';
-      if (st === '완료' && t.status === ' ') { t.status = 'x'; this.update(t, { status: 'x' }); }
+      if (!nf) { t.noteStatus = ''; continue; }
+      const fm = this.app.metadataCache.getFileCache(nf)?.frontmatter || {};
+      const st = String(fm.status || '');
+      t.noteStatus = st;
+      const ch = {};
+      if (st === '완료' && t.status === ' ') ch.status = 'x';
+      else if (st === '중단' && t.status !== '-') ch.status = '-';
+      else if ((st === '시작 전' || st === '진행 중') && /[xX]/.test(t.status)) ch.status = ' ';
+      const end = fm.end ? String(fm.end).slice(0, 10) : '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(end) && end !== t.due) ch.due = end;
+      else if (!end && t.due && 'end' in fm) ch.due = '';
+      try {
+        const body = await this.app.vault.cachedRead(nf);
+        const m = /##\s*할 일\s*\n-\s+\[.\]\s+(.+)/.exec(body);
+        const txt = m && m[1].trim();
+        if (txt && txt !== t.text) ch.text = txt;
+      } catch (e) { /* 노트 읽기 실패 */ }
+      if (Object.keys(ch).length) { Object.assign(t, ch); await this.update(t, {}); this.changed = true; }
     }
     return this.cache;
   }
@@ -756,6 +771,15 @@ class Tasks {
     if (lk) return this.app.workspace.openLinkText(lk[1], this.path, false);
     return leaf.openFile(this.file(), { eState: { line: t.line } });
   }
+  // 연락처 노트가 있으면 [[연락처|이름]]
+  contactLink(who) {
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      if (!f.path.startsWith(CONTACTS + '/')) continue;
+      const nm = String(this.app.metadataCache.getFileCache(f)?.frontmatter?.name || '');
+      if (f.basename === who || nm === who) return f.basename === who ? `[[${who}]]` : `[[${f.basename}|${who}]]`;
+    }
+    return who;
+  }
   // PARA 를 쓰는 볼트면 할 일마다 '시작 전' 노트 (0. Inbox, 자동 이동 플러그인이 프로젝트 폴더로 옮겨 줌)
   async makeNote(t) {
     if (!this.app.vault.getAbstractFileByPath('0. Inbox')) return '';
@@ -774,7 +798,7 @@ tags: [할일]
 ## 할 일
 - [ ] ${t.text}
 
-${t.who ? `- 누구와: ${t.who}\n` : ''}${t.ctx ? `- 무슨 일: ${t.ctx}\n` : ''}${t.link ? `- 출처: ${t.link}\n` : ''}- 할 일 목록: [[할 일]]
+${t.who ? `- 누구와: ${this.contactLink(t.who)}\n` : ''}${t.ctx ? `- 무슨 일: ${t.ctx}\n` : ''}${t.link ? `- 출처: ${t.link}\n` : ''}- 할 일 목록: [[할 일]]
 
 ## 메모
 
@@ -1569,7 +1593,7 @@ class Days {
       for (const t of this.plugin.tasks.cache || []) {
         const fromTalk = /통화|카톡|회의/.test(t.link || '');
         if (!(ct[t.id] || (autoT && fromTalk)) || !t.due || t.status === '-') continue;
-        events.push({ id: `task:${t.id}`, title: `✅ ${t.text}`, date: t.due, time: t.time || '',
+        events.push({ id: `task:${t.id}`, update: true, title: `✅ ${t.text}`, date: t.due, time: t.time || '',
           notes: [t.who && `누구와: ${t.who}`, t.ctx && `무슨 일: ${t.ctx}`, 'Rappo 할 일'].filter(Boolean).join('\n') });
       }
       // 캘린더에서 지우기는 사용자가 확인한 것만 (지운 할 일 → '캘린더에서도 지우기'를 눌렀을 때)
@@ -2214,6 +2238,15 @@ class PersonView {
         hist.push({ d: `${last.date} ${last.time}`, icon: c.kind === '단체' ? '👥' : '💬', text: `${c.msgs[0].date.slice(0, 7)} 대화 ${c.msgs.length.toLocaleString()}개 · ${last.who}: ${clean(last.text)}`, file: c.file, line: last.line });
       }
     }
+    // 할 일도 히스토리에: 출처 통화·카톡·회의 날짜(없으면 마감) 기준, 누르면 할 일 노트
+    for (const t of tasks) {
+      if (t.status === '-') continue;
+      const src = /(\d{4}-\d{2}-\d{2})/.exec(t.link || '') || /(\d{1,2})\/(\d{1,2})/.exec(t.link || '');
+      let d = t.due || td;
+      if (src && src[1] && src[1].length === 10) d = src[1];
+      else if (src) d = `${td.slice(0, 4)}-${pad(src[1])}-${pad(src[2])}`;
+      hist.push({ d: `${d} 99:99`, icon: /[xX]/.test(t.status) ? '☑️' : '✅', text: `${t.text}${t.due ? ` (마감 ${t.due.slice(5).replace('-', '/')})` : ''}`, task: t });
+    }
     hist.sort((a, b) => b.d.localeCompare(a.d));
     const hb = section(r, '🕘 히스토리', hist.length);
     if (!hist.length) empty(hb, '기록이 없어요');
@@ -2221,11 +2254,25 @@ class PersonView {
       const x = row(hb);
       x.createSpan({ cls: 'rd-muted rd-when', text: h.d.slice(2, 10).replace(/-/g, '.') });
       const a = x.createEl('a', { cls: 'rd-text rd-link', text: `${h.icon} ${clean(h.text)}` });
-      a.onclick = () => app.workspace.getLeaf(false).openFile(h.file, { eState: { line: h.line } });
+      a.onclick = (ev2) => h.task ? P.tasks.open(h.task, ev2) : app.workspace.getLeaf(false).openFile(h.file, { eState: { line: h.line } });
     }
     if (hist.length > 12 && !this.more) { const m = hb.createEl('a', { cls: 'rd-hint', text: `더 보기 (${hist.length - 12}개) ›` }); m.onclick = () => { this.more = true; this.render(); }; }
   }
 }
+class PersonChild extends MarkdownRenderChild {
+  constructor(plugin, el, sourcePath, name) { super(el); this.plugin = plugin; this.sourcePath = sourcePath; this.name = name; }
+  onload() {
+    const app = this.plugin.app, f = app.vault.getAbstractFileByPath(this.sourcePath);
+    const fm = (f && app.metadataCache.getFileCache(f)?.frontmatter) || {};
+    const nm = String(fm.name || '').trim();
+    const name = this.name || (nm && nm !== '정보 없음' ? nm : String(fm.phone || (f ? f.basename : '')));
+    this.containerEl.addClass('rd-person-inline');
+    this.view = new PersonView(this.plugin, this.containerEl, name);
+    this.view.render();
+    this.registerEvent(app.metadataCache.on('changed', (cf) => { if (cf.path === this.plugin.tasks.path) this.view.render(); }));
+  }
+}
+
 class PersonModal extends Modal {
   constructor(plugin, name) { super(plugin.app); this.plugin = plugin; this.name = name; }
   onOpen() { this.modalEl.addClass('ks-modal', 'rd-person-modal'); new PersonView(this.plugin, this.contentEl, this.name).render(); }
@@ -2719,6 +2766,13 @@ module.exports = class RappoSearch extends Plugin {
     this.registerMarkdownCodeBlockProcessor('챙길날', (src, el, ctx) => ctx.addChild(new DaysChild(this, el)));
     this.addCommand({ id: 'days', name: 'Rappo 챙길 날 적기', callback: () => this.days.openNote() });
     this.recorder = new Recorder(this);
+    // 할 일 노트(#할일)를 고치면 할 일 목록과 캘린더에 바로 반영
+    const syncSoon = debounce(async () => { await this.tasks.load(); await this.days.upcoming(); }, 1500, true);
+    this.registerEvent(this.app.metadataCache.on('changed', (f) => {
+      const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+      const tags = [].concat(fm?.tags || []).map(String);
+      if (tags.includes('할일') || f.path === this.tasks.path) syncSoon();
+    }));
     // 대시보드 노트(PARA 대시보드·연락 대시보드)는 열 때 늘 읽기 모드로 — 편집이 필요하면 그때 전환
     const isDash = (f) => {
       const fm = f && this.app.metadataCache.getFileCache(f)?.frontmatter;
@@ -2788,6 +2842,8 @@ module.exports = class RappoSearch extends Plugin {
     this.registerMarkdownCodeBlockProcessor('할일', (src, el, ctx) => ctx.addChild(new TodoChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('할일챙길날', (src, el, ctx) => ctx.addChild(new BoardChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('소비', (src, el, ctx) => ctx.addChild(new SpendChild(this, el)));
+    // 연락처 노트의 ```사람``` — 그 사람의 약속·할 일·챙길 날·히스토리
+    this.registerMarkdownCodeBlockProcessor('사람', (src, el, ctx) => ctx.addChild(new PersonChild(this, el, ctx.sourcePath, src.trim())));
     this.registerMarkdownCodeBlockProcessor('연락처', (src, el, ctx) => ctx.addChild(new PeopleChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('연락대시보드', (src, el, ctx) => ctx.addChild(new ContactDashChild(this, el)));
     this.addCommand({ id: 'open', name: 'Rappo 대화·통화 검색', callback: () => new SearchModal(this).open() });

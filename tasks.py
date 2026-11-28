@@ -301,6 +301,16 @@ def _safe_name(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()[:60] or "할 일"
 
 
+def _contact_link(root: Path, who: str) -> str:
+    """연락처 노트(이름 또는 번호)가 있으면 [[연락처|이름]] — 그 사람 연락처 노트의 라포 칸에 이 할 일이 함께 보인다."""
+    cdir = root / "연락처"
+    if cdir.is_dir():
+        for p in cdir.glob("*.md"):
+            if p.stem == who or re.search(rf'^name:\s*"?{re.escape(who)}"?\s*$', _fm_text(p), re.M):
+                return f"[[{p.stem}|{who}]]" if p.stem != who else f"[[{who}]]"
+    return who
+
+
 def link_notes(root: Path) -> int:
     p = note_path(root)
     vault = _vault_of(root)
@@ -328,7 +338,7 @@ def link_notes(root: Path) -> int:
             "---\ntype: note\nstatus: 시작 전\narea: []\nproject: []\n"
             f"end: {due}\ncreated: {datetime.now():%Y-%m-%d}\ntags: [할일]\n---\n"
             f"## 할 일\n- [ ] {text}\n\n"
-            + (f"- 누구와: {who}\n" if who else "") + (f"- 무슨 일: {ctx}\n" if ctx else "")
+            + (f"- 누구와: {_contact_link(root, who)}\n" if who else "") + (f"- 무슨 일: {ctx}\n" if ctx else "")
             + (f"- 출처: {link}\n" if link else "") + "- 할 일 목록: [[할 일]]\n\n## 메모\n\n", encoding="utf-8")
         lines[i] = re.sub(r"(\s🆔\s)", f" 📝 [[{name}]]\\1", line, count=1) if "🆔" in line else f"{line} 📝 [[{name}]]"
         made += 1
