@@ -381,3 +381,17 @@ div.ks-section-head { cursor: default; }
 /* v28.1 Rappo AI: 아래 상태 표시줄(백링크·글자 수)에 입력칸이 가리지 않게 */
 .rai-input { padding-bottom: calc(var(--status-bar-height, 28px) + 14px); }
 .rai-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* v28.2 Rappo AI: 이어 묻기 · 새 대화 · 지난 대화 */
+.rai-head { gap: 8px; }
+.rai-head-btns { display: flex; gap: 4px; margin-left: auto; }
+.rai-hbtn { font-size: 11.5px; height: auto; padding: 3px 8px; box-shadow: none !important; background: transparent !important; border: 1px solid var(--background-modifier-border) !important; color: var(--text-muted); }
+.rai-hbtn:hover, .rai-hbtn.is-on { color: var(--text-normal); background: var(--background-modifier-hover) !important; }
+.rai-hist { display: flex; flex-direction: column; gap: 2px; }
+.rai-hist-head { font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 0 4px 6px; }
+.rai-hist-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.rai-hist-row:hover { background: var(--background-modifier-hover); }
+.rai-hist-row.is-cur { background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); }
+.rai-hist-t { flex: 1; min-width: 0; }
+.rai-hist-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rai-hist-del { color: var(--text-faint); cursor: pointer; padding: 2px 6px; text-decoration: none; }
+.rai-hist-del:hover { color: var(--color-red); }

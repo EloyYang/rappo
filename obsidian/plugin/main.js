@@ -2888,7 +2888,7 @@ class LocalAI {
     }
     this.touch();
     // 작은 모델이 '12 월', '3 시'처럼 띄어 쓰는 버릇 고치기
-    return out.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/(\d) (월|일|시|분|초|팀|명|개|원|만원|천원|년|주|번|살|층|호)(?![가-힣])/g, '$1$2').replace(/(\d) (월|일|시|분|초|년)(?=(부터|까지|에|은|는|이|의|간|동안|째|쯤|경|로|과|와|도|만)(?![가-힣]{2})|[가-힣]?[\s.,)~(]|$)/gm, '$1$2').trim();
+    return out.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/(\d) (월|일|시|분|초|팀|명|개|원|만원|천원|년|주|번|살|층|호)(?![가-힣])/g, '$1$2').replace(/(\d) (월|일|시|분|초|년)(?=입니|이에요|예요|이야|(부터|까지|에|은|는|이|의|간|동안|째|쯤|경|로|과|와|도|만)(?![가-힣]{2})|[가-힣]?[\s.,)~(]|$)/gm, '$1$2').trim();
   }
 }
 
@@ -2990,10 +2990,11 @@ class ConvoFinder {
     const seen = new Set();
     return out.filter((p) => !seen.has(p.key) && seen.add(p.key)).slice(0, 2);
   }
-  async gather(q, terms, { all = false, budget = 4800 } = {}) {
+  async gather(q, terms, { all = false, budget = 4800, people: prev = null } = {}) {
     const idx = this.plugin.index;
     await idx.ensure();
-    const people = this.people(q);
+    let people = this.people(q);
+    if (!people.length && prev && prev.length) people = prev;   // '그럼 언제 만나기로 했어?' 처럼 이름 없이 이어 물을 때
     if (!people.length && !all) return null;
     const names = new Set(people.map((p) => p.name)), keys = people.map((p) => p.key);
     // 대화는 말끝이 다양하니 3글자 넘는 낱말은 앞 2글자로도 (다쳤다고 → 다쳤)
@@ -3043,13 +3044,74 @@ class ConvoFinder {
   }
 }
 
+// 캘린더(맥·구글, Rappo 앱이 내보낸 calendar-events.json)에서 질문에 맞는 일정: 낱말·사람이 든 일정은 늘,
+// 날짜·일정을 묻는 말(오늘·내일·다음 주·언제…)이면 그 기간 일정도. 달력에서 끈 캘린더는 뺀다.
+async function calContext(P, q, terms, people) {
+  let data;
+  try { data = JSON.parse(await P.app.vault.adapter.read(`${P.manifest.dir}/calendar-events.json`)); } catch (e) { return null; }
+  const hid = new Set(P.data.calHidden || []);
+  const evs = (data.events || []).filter((e) => !hid.has(e.calId));
+  if (!evs.length) return null;
+  const now = new Date(), d0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const add = (n) => ymd(new Date(d0.getTime() + n * 86400000));
+  const wd = d0.getDay(), mon = (wd + 6) % 7;
+  let from = '', to = '';
+  if (/오늘/.test(q)) { from = add(0); to = add(0); }
+  else if (/내일/.test(q)) { from = add(1); to = add(1); }
+  else if (/모레/.test(q)) { from = add(2); to = add(2); }
+  else if (/이번\s*주|이번주/.test(q)) { from = add(-mon); to = add(6 - mon); }
+  else if (/다음\s*주|다음주/.test(q)) { from = add(7 - mon); to = add(13 - mon); }
+  else if (/지난\s*주|지난주/.test(q)) { from = add(-mon - 7); to = add(-mon - 1); }
+  else if (/이번\s*달|이번달/.test(q)) { from = ymd(new Date(d0.getFullYear(), d0.getMonth(), 1)); to = ymd(new Date(d0.getFullYear(), d0.getMonth() + 1, 0)); }
+  else if (/다음\s*달|다음달/.test(q)) { from = ymd(new Date(d0.getFullYear(), d0.getMonth() + 1, 1)); to = ymd(new Date(d0.getFullYear(), d0.getMonth() + 2, 0)); }
+  else if (/일정|약속|스케줄|캘린더|달력|언제|몇\s*시|예정|만나기로|계획/.test(q)) { from = add(-3); to = add(30); }
+  const md = q.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+  if (md) { const y = d0.getFullYear(), m = Number(md[1]) - 1; const dd = new Date(Number(md[1]) - 1 < d0.getMonth() - 6 ? y + 1 : y, m, Number(md[2])); from = to = ymd(dd); }
+  const keys = [...terms.filter((t) => t.length >= 2 && !STOP_WORDS.has(t) && !/^(일정|약속|오늘|내일|다음|이번|언제|캘린더|달력|스케줄)$/.test(t)),
+    ...(people || []).map((p) => p.key)].map((t) => t.toLowerCase());
+  const pick = [];
+  for (const e of evs) {
+    const d = e.start.slice(0, 10);
+    const hay = `${e.title || ''} ${e.location || ''} ${(e.notes || '').slice(0, 300)}`.toLowerCase();
+    const hit = keys.some((k) => hay.includes(k));
+    const inRange = !!from && d <= to && (e.end ? e.end.slice(0, 10) : d) >= from;
+    if (hit || inRange) pick.push({ e, d, hit });
+  }
+  if (!pick.length) return { text: '', n: 0, from, to };
+  // 낱말이 맞는 일정은 오늘에 가까운 것부터, 기간 일정은 날짜순
+  const td = add(0);
+  const dist = (x) => Math.abs(new Date(x.d + 'T12:00:00') - new Date(td + 'T12:00:00'));
+  const hits = pick.filter((x) => x.hit).sort((a, b) => dist(a) - dist(b)).slice(0, 12);
+  const rng = pick.filter((x) => !x.hit).sort((a, b) => a.e.start.localeCompare(b.e.start)).slice(0, 25);
+  const list = [...hits, ...rng].sort((a, b) => a.e.start.localeCompare(b.e.start));
+  const W = ['일', '월', '화', '수', '목', '금', '토'];
+  const text = list.map(({ e, d }) => {
+    const dd = new Date(d + 'T12:00:00');
+    const tm = e.allDay ? '종일' : `${e.start.slice(11, 16)}~${e.end.slice(11, 16)}`;
+    return `${dd.getMonth() + 1}월 ${dd.getDate()}일(${W[dd.getDay()]}) ${tm} ${e.title || '(제목 없음)'}${e.location ? ' · ' + e.location : ''} [${e.calendar || ''}]${e.notes ? ' — ' + e.notes.replace(/\s+/g, ' ').slice(0, 80) : ''}`;
+  }).join('\n');
+  const kd = (x) => { const v = new Date(x + 'T12:00:00'); return `${v.getMonth() + 1}월 ${v.getDate()}일(${W[v.getDay()]})`; };
+  const range = from ? (from === to ? kd(from) : `${kd(from)} ~ ${kd(to)}`) : '';
+  return { text, n: list.length, from, to, range };
+}
+
 class AIView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf); this.plugin = plugin; this.mode = 'ask'; this.logs = false; this.useNote = false; this.useVault = true; this.busy = null;
+    this.sess = this.newSess(); this.showHist = false;
   }
   getViewType() { return AI_VIEW; }
   getDisplayText() { return 'Rappo AI'; }
   getIcon() { return 'sparkles'; }
+  newSess() { return { id: Date.now().toString(36), made: new Date().toISOString(), title: '', turns: [] }; }
+  sessions() { return this.plugin.data.aiSessions || (this.plugin.data.aiSessions = []); }
+  async saveSess() {
+    if (!this.sess.turns.length) return;
+    const list = this.sessions().filter((x) => x.id !== this.sess.id);
+    list.unshift(this.sess);
+    this.plugin.data.aiSessions = list.slice(0, 30);
+    await this.plugin.saveData(this.plugin.data);
+  }
   async onOpen() {
     this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
       if (leaf && leaf.view instanceof MarkdownView) { this.lastMd = leaf.view; this.drawOpts && this.drawOpts(); }
@@ -3065,14 +3127,24 @@ class AIView extends ItemView {
     head.createSpan({ cls: 'rai-title', text: '✨ Rappo AI' });
     this.dot = head.createSpan({ cls: 'rai-state' });
     this.plugin.ai.up().then((u) => { this.dot.setText(u ? '● 켜짐' : '○ 쓸 때 켜짐'); this.dot.toggleClass('is-on', u); });
+    const hb = head.createDiv({ cls: 'rai-head-btns' });
+    const hist = hb.createEl('button', { cls: 'rai-hbtn' + (this.showHist ? ' is-on' : ''), text: '🕘 지난 대화', attr: { 'aria-label': '지난 대화 열기' } });
+    hist.onclick = () => { this.showHist = !this.showHist; this.draw(); };
+    const nw = hb.createEl('button', { cls: 'rai-hbtn', text: '＋ 새 대화', attr: { 'aria-label': '앞 대화와 상관없이 새로 묻기' } });
+    nw.onclick = () => { if (this.busy) return; this.sess = this.newSess(); this.showHist = false; this.draw(); };
     const tabs = c.createDiv({ cls: 'rai-tabs' });
     for (const [k, t] of [['ask', '🔎 노트에게 묻기'], ['write', '✍️ 노트 쓰기']]) {
       const b = tabs.createEl('button', { cls: 'rai-tab' + (this.mode === k ? ' is-active' : ''), text: t });
       b.onclick = () => { this.mode = k; this.draw(); };
     }
     this.log = c.createDiv({ cls: 'rai-log' });
-    if (!this.cards || !this.cards.length) this.empty();
-    else for (const el of this.cards) this.log.appendChild(el);
+    if (this.showHist) this.drawHist();
+    else if (!this.sess.turns.length && !this.pending) this.empty();
+    else {
+      for (const t of this.sess.turns) { const el = this.card(t); this.finish(el, t); }
+      if (this.pending) this.log.appendChild(this.pending);
+      setTimeout(() => { this.log.scrollTop = this.log.scrollHeight; }, 0);
+    }
     const box = c.createDiv({ cls: 'rai-input' });
     this.opts = box.createDiv({ cls: 'rai-opts' });
     this.drawOpts = () => {
@@ -3086,118 +3158,204 @@ class AIView extends ItemView {
       }
     };
     this.drawOpts();
-    this.ta = box.createEl('textarea', { cls: 'rai-ta', attr: { rows: 3, placeholder: this.mode === 'ask'
-      ? '예) 길동이형이랑 12월 일정 어떻게 정했지?\n(Enter 보내기 · Shift+Enter 줄바꿈)'
+    const more = this.sess.turns.length > 0;
+    this.ta = box.createEl('textarea', { cls: 'rai-ta', attr: { rows: 3, placeholder: more
+      ? (this.mode === 'ask' ? '이어서 물어보세요. 예) 그럼 언제 만나기로 했어?' : '이어서 고쳐 달라고 해 보세요. 예) 더 짧게, 표로 바꿔줘')
+      : this.mode === 'ask' ? '예) 길동이형이랑 12월 일정 어떻게 정했지?\n(Enter 보내기 · Shift+Enter 줄바꿈)'
       : '예) 다음 주 워크숍 준비 체크리스트 노트 만들어줘\n예) 지금 노트를 3줄로 요약해줘' } });
     this.ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); } };
     const row = box.createDiv({ cls: 'rai-send-row' });
-    row.createSpan({ cls: 'rai-hint', text: '🔒 내 맥 안에서만 처리돼요' });
+    row.createSpan({ cls: 'rai-hint', text: more ? `💬 앞 대화에 이어서 답해요 (${this.sess.turns.length}) · 새 주제는 ＋ 새 대화` : '🔒 내 맥 안에서만 처리돼요' });
     this.sendBtn = row.createEl('button', { cls: 'mod-cta rai-send', text: this.busy ? '■ 멈추기' : '보내기' });
     this.sendBtn.onclick = () => (this.busy ? this.busy.abort() : this.send());
     setTimeout(() => this.ta.focus(), 50);
   }
+  drawHist() {
+    const list = this.sessions();
+    const h = this.log.createDiv({ cls: 'rai-hist' });
+    h.createDiv({ cls: 'rai-hist-head', text: `지난 대화 ${list.length}개` });
+    if (!list.length) h.createDiv({ cls: 'rai-muted', text: '아직 저장된 대화가 없어요' });
+    for (const s of list) {
+      const r = h.createDiv({ cls: 'rai-hist-row' + (s.id === this.sess.id ? ' is-cur' : '') });
+      const t = r.createDiv({ cls: 'rai-hist-t' });
+      t.createDiv({ cls: 'rai-hist-title', text: s.title || s.turns[0]?.q || '(빈 대화)' });
+      const d = new Date(s.made);
+      t.createDiv({ cls: 'rai-muted', text: `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())} · 질문 ${s.turns.length}개` });
+      r.onclick = () => { if (this.busy) return; this.sess = s; this.showHist = false; this.draw(); };
+      const x = r.createEl('a', { cls: 'rai-hist-del', text: '✕', attr: { 'aria-label': '이 대화 지우기' } });
+      x.onclick = async (e) => {
+        e.stopPropagation();
+        this.plugin.data.aiSessions = list.filter((y) => y.id !== s.id);
+        await this.plugin.saveData(this.plugin.data);
+        if (s.id === this.sess.id) this.sess = this.newSess();
+        this.draw();
+      };
+    }
+  }
   empty() {
     const e = this.log.createDiv({ cls: 'rai-empty' });
     if (this.mode === 'ask') {
-      e.createDiv({ text: '내 노트에서 찾아서, 노트에 적힌 것만으로 답해요.' });
-      e.createDiv({ cls: 'rai-muted', text: '답 아래에 근거 노트가 붙어요 — 눌러서 바로 열기' });
+      e.createDiv({ text: '내 노트 · 대화 기록 · 캘린더에서 찾아서, 적힌 것만으로 답해요.' });
+      e.createDiv({ cls: 'rai-muted', text: '이어서 물으면 앞 대화를 기억해요 · 새 주제는 ＋ 새 대화' });
     } else {
       e.createDiv({ text: '요청대로 노트를 써 드려요. 관련 노트나 지금 열린 노트를 참고할 수 있어요.' });
-      e.createDiv({ cls: 'rai-muted', text: '다 쓰면 새 노트로 저장하거나, 지금 노트의 커서 자리에 넣을 수 있어요' });
+      e.createDiv({ cls: 'rai-muted', text: '"더 짧게"처럼 이어서 고쳐 달라고 할 수 있어요' });
     }
   }
-  card(q) {
-    if (!this.cards || !this.cards.length) { this.log.empty(); this.cards = []; }
+  card(t) {
+    if (!this.log.querySelector('.rai-card')) this.log.empty();
     const el = this.log.createDiv({ cls: 'rai-card' });
-    el.createDiv({ cls: 'rai-q', text: q });
-    this.cards.push(el);
+    el.createDiv({ cls: 'rai-q', text: (t.mode === 'write' ? '✍️ ' : '') + t.q });
     return el;
+  }
+  // 답 한 개 그리기 (방금 받은 답 · 지난 대화 모두)
+  async finish(el, t) {
+    const open = (f) => (e) => this.app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(f);
+    const ans = el.querySelector('.rai-a') || el.createDiv({ cls: 'rai-a markdown-rendered' });
+    ans.empty();
+    if (t.err) { ans.setText(t.a); return; }
+    await MarkdownRenderer.render(this.app, t.a, ans, '', this);
+    ans.querySelectorAll('a.internal-link').forEach((a) => {
+      a.onclick = (e) => { e.preventDefault(); this.app.workspace.openLinkText(a.getAttr('data-href') || a.getText(), '', e.metaKey || e.ctrlKey); };
+    });
+    const notes = (t.notes || []).map((p) => this.app.vault.getAbstractFileByPath(p)).filter(Boolean);
+    if (notes.length) {
+      const s = el.createDiv({ cls: 'rai-src' });
+      s.createSpan({ cls: 'rai-muted', text: t.mode === 'ask' ? '근거 노트 ' : '참고한 노트 ' });
+      for (const f of notes) { const a = s.createEl('a', { cls: 'rai-src-link', text: f.basename }); a.onclick = open(f); }
+    }
+    const rooms = (t.rooms || []).map((r) => ({ ...r, f: this.app.vault.getAbstractFileByPath(r.path) })).filter((r) => r.f);
+    if (rooms.length) {
+      const s = el.createDiv({ cls: 'rai-src' });
+      s.createSpan({ cls: 'rai-muted', text: `💬 대화 ${t.n || ''}줄 ` });
+      for (const r of rooms) { const a = s.createEl('a', { cls: 'rai-src-link is-chat', text: (r.kind === '단체' ? '👥 ' : r.kind === '통화' ? '📞 ' : '') + r.room }); a.onclick = open(r.f); }
+    }
+    if (t.cal && t.cal.n) {
+      const s = el.createDiv({ cls: 'rai-src' });
+      s.createSpan({ cls: 'rai-muted', text: '📅 캘린더 ' });
+      s.createSpan({ cls: 'rai-src-link', text: `일정 ${t.cal.n}개${t.cal.from ? ` · ${t.cal.from.slice(5).replace('-', '/')}${t.cal.to && t.cal.to !== t.cal.from ? '~' + t.cal.to.slice(5).replace('-', '/') : ''}` : ''}` });
+    }
+    const acts = el.createDiv({ cls: 'rai-acts' });
+    const btn = (x, fn, cta) => { const b = acts.createEl('button', { cls: cta ? 'mod-cta' : '', text: x }); b.onclick = fn; };
+    if (t.mode === 'write') {
+      btn('📝 새 노트로 저장', () => this.saveNew(t.a), true);
+      btn('⤵ 지금 노트에 넣기', () => this.insert(t.a));
+    }
+    btn('복사', () => { navigator.clipboard.writeText(t.a); new Notice('복사했어요'); });
+    if (t.mode === 'ask') btn('📝 이 답을 노트로', () => this.saveNew(`# ${t.q.replace(/[?？]\s*$/, '')}\n\n${t.a}`));
   }
   async send() {
     const q = this.ta.value.trim();
     if (!q || this.busy) return;
     this.ta.value = '';
-    const mode = this.mode, el = this.card((mode === 'write' ? '✍️ ' : '') + q);
-    const st = el.createDiv({ cls: 'rai-status', text: '노트 찾는 중…' });
+    const mode = this.mode, prev = this.sess.turns.filter((x) => !x.err).slice(-3);
+    const t = { mode, q, at: new Date().toISOString() };
+    if (this.showHist) { this.showHist = false; this.draw(); }
+    const el = this.card(t); this.pending = el;
+    const st = el.createDiv({ cls: 'rai-status', text: prev.length ? '앞 대화와 이어서 보는 중…' : '노트 찾는 중…' });
     const ans = el.createDiv({ cls: 'rai-a markdown-rendered' });
     const ctl = new AbortController(); this.busy = ctl; this.sendBtn.setText('■ 멈추기');
     const P = this.plugin, AI = P.ai, F = P.finder;
     const scroll = () => { this.log.scrollTop = this.log.scrollHeight; };
+    scroll();
+    const short = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
+    const history = prev.map((x) => `사용자: ${x.q}\nAI: ${short(x.a, x.mode === 'write' ? 400 : 600)}`).join('\n');
     try {
-      // 1) 핵심어 (모델에게 동의어까지 몇 개) → 노트 찾기
-      let hits = [], terms = [];
+      // 1) 이어서 묻는 말이면 앞 대화 없이도 알아듣게 풀어 쓰고(sq), 노트 검색어(kw)도 함께
+      let hits = [], terms = [], sq = q;
       const needVault = mode === 'ask' || this.useVault;
-      if (needVault) {
+      if (needVault || prev.length) {
         let kw = [];
         try {
-          const raw = await AI.chat([{ role: 'user', content: `아래 ${mode === 'ask' ? '질문' : '요청'}에 맞는 옵시디언 노트를 찾으려고 해. 노트 본문에 나올 법한 검색어 3~6개(사람 이름, 고유명사, 핵심 명사, 비슷한 말)를 JSON 배열로만 답해. 예: ["워크숍","준비물","체크리스트"]\n\n${q}` }],
-            { max: 80, temp: 0, signal: ctl.signal, status: (s) => st.setText(s) });
+          // 작은 모델은 '풀어 쓰기'를 시키면 답을 해 버려서, 검색어만 뽑게 한다 (앞 질문은 문맥으로만)
+          const ask = `아래 ${mode === 'ask' ? '질문' : '요청'}에 맞는 옵시디언 노트·대화를 찾으려고 해. 찾을 검색어 3~6개(사람 이름, 고유명사, 핵심 명사, 비슷한 말)를 JSON 배열로만 답해. 답이나 설명은 쓰지 마. 예: ["워크숍","준비물","체크리스트"]\n` +
+            (prev.length ? `('거기·그 사람·그럼' 같은 말은 앞 질문이 가리키는 것: ${prev.map((x) => x.q).join(' / ')})\n` : '') + `\n${q}`;
+          const raw = await AI.chat([{ role: 'user', content: ask }], { max: 80, temp: 0, signal: ctl.signal, status: (s) => st.setText(s) });
           const m = raw.match(/\[[\s\S]*?\]/); kw = m ? JSON.parse(m[0]) : [];
         } catch (e) { if (e.name === 'AbortError') throw e; }
-        terms = aiTerms(q, kw);
-        st.setText('노트 찾는 중…');
-        hits = await F.find(terms, { logs: false, limit: mode === 'ask' ? 6 : 4 });
+        // 이어 묻는 말: 앞 질문 낱말도 뒤에 붙여 (검색은 지금 질문 낱말이 먼저)
+        if (prev.length) sq = `${q} ${prev[prev.length - 1].q}`;
+        t.sq = sq;
+        terms = aiTerms(sq, kw);
+        if (needVault) {
+          st.setText('노트 찾는 중…');
+          hits = await F.find(terms, { logs: false, limit: mode === 'ask' ? 6 : 4 });
+          // 앞 답에서 쓴 노트는 이어서 볼 수 있게 (2개까지)
+          for (const p of [...new Set(prev.flatMap((x) => x.notes || []))].slice(-2)) {
+            const f = this.app.vault.getAbstractFileByPath(p);
+            if (f && !hits.some((h) => h.f === f)) { await F.text(f); hits.push({ f, score: 0, hit: 0 }); }
+          }
+        }
       }
-      const src = hits.map((h, i) => `[노트 ${i + 1}] [[${h.f.basename}]] (${h.f.parent ? h.f.parent.path : ''})\n${F.snippet(h.f, terms, mode === 'ask' ? 1100 : 900)}`).join('\n\n');
+      const src = hits.map((h, i) => `[노트 ${i + 1}] [[${h.f.basename}]] (${h.f.parent ? h.f.parent.path : ''})\n${F.snippet(h.f, terms, mode === 'ask' ? 1000 : 900)}`).join('\n\n');
       const cur = mode === 'write' && this.useNote && this.lastMd && this.lastMd.file ? this.lastMd.file : null;
       const curText = cur ? (await this.app.vault.cachedRead(cur)).replace(/^---\n[\s\S]*?\n---\n/, '').slice(0, 6000) : '';
-      // 대화·통화 기록: 질문에 사람이 나오면 늘, 💬 를 켜 두면 질문 낱말로도
+      // 대화·통화 기록: 질문(이나 앞 대화)에 사람이 나오면 늘, 💬 를 켜 두면 질문 낱말로도
       let convo = null;
       if (mode === 'ask') {
         st.setText('대화 기록 찾는 중…');
-        try { convo = await P.convo.gather(q, terms, { all: this.logs || /대화|카톡|톡방|단톡|통화|얘기|이야기|말했|했다고|그랬|라고 했/.test(q) }); } catch (e) { console.warn('Rappo AI: 대화 기록', e); }
+        const lastPeople = [...prev].reverse().find((x) => x.people && x.people.length)?.people || [];
+        try {
+          convo = await P.convo.gather(q, terms, {
+            all: this.logs || /대화|카톡|톡방|단톡|통화|얘기|이야기|말했|했다고|그랬|라고 했|만나|약속/.test(sq), people: lastPeople, budget: prev.length ? 4000 : 4800 });
+        } catch (e) { console.warn('Rappo AI: 대화 기록', e); }
         if (convo && !convo.n) convo = null;
       }
-      if (mode === 'ask' && !hits.length && !convo) { st.remove(); ans.setText('관련된 노트나 대화를 찾지 못했어요. 다른 낱말로 물어봐 주세요.' + (this.logs ? '' : ' (대화·통화 기록까지 찾으려면 아래 💬 를 켜 주세요)')); return; }
-      st.setText(mode === 'ask' ? `노트 ${hits.length}개${convo ? ` · 대화 ${convo.n}줄` : ''}을 읽고 답하는 중…` : '쓰는 중…');
+      // 캘린더 일정 (묻기는 늘, 쓰기는 '내 노트 참고'를 켰을 때)
+      let cal = null;
+      if (mode === 'ask' || this.useVault) {
+        try { cal = await calContext(P, `${q} ${mode === 'ask' && prev.length ? prev[prev.length - 1].q : ''}`, terms, convo ? convo.people : []); } catch (e) { console.warn('Rappo AI: 캘린더', e); }
+        if (cal && !cal.n) cal = null;
+      }
+      if (mode === 'ask' && !hits.length && !convo && !cal) {
+        t.a = '관련된 노트나 대화를 찾지 못했어요. 다른 낱말로 물어봐 주세요.' + (this.logs ? '' : ' (대화·통화 기록까지 찾으려면 아래 💬 를 켜 주세요)'); t.err = true;
+        st.remove(); ans.setText(t.a); return;
+      }
+      st.setText(mode === 'ask' ? `노트 ${hits.length}개${convo ? ` · 대화 ${convo.n}줄` : ''}${cal ? ` · 일정 ${cal.n}개` : ''}을 읽고 답하는 중…` : '쓰는 중…');
+      const ksrc = cal ? `\n[캘린더 일정 — 맥·구글 캘린더${cal.range ? `, 질문의 기간: ${cal.range}` : ''}. 날짜·요일·시간은 아래 줄에 적힌 그대로 옮겨 써 (직접 계산하지 마)]\n${cal.text}\n` : '';
       const csrc = convo ? `\n[대화·통화 기록 — '나'는 사용자 본인${convo.people.length ? `, 질문 속 사람: ${convo.people.map((p) => p.name).join(', ')}` : ''}. 단체방 이름과 날짜를 함께 봐]\n${convo.text}\n` : '';
+      const hblock = prev.length ? `\n[앞 대화 — 새 질문이 이걸 이어 묻는 것이면 같은 사람·주제로 이어서 답해. '거기·그 사람·그럼'은 앞 대화에서 말한 것을 가리켜]\n${history}\n` : '';
+      const lastW = [...prev].reverse().find((x) => x.mode === 'write');
       const day = today();
+      const qline = q;
       const prompt = mode === 'ask'
-        ? `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 근거로만 답하는 비서야.\n규칙: 아래 노트 발췌와 대화 기록에 있는 내용으로만 한국어로 짧고 분명하게 답해. 숫자와 단위는 붙여 써(12월, 3시). 대화를 물으면 최근 것부터 날짜와 함께(어느 방에서였는지도) 정리해. 메시지 수 같은 통계는 말하지 마. 없으면 "노트에서 찾지 못했어요"라고 해. 추측하거나 지어내지 마. 근거가 된 노트는 문장 끝에 [[노트 이름]]으로 붙여.\n\n${src}${csrc}\n질문: ${q}`
-        : `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 쓰는 비서야.\n요청대로 새 마크다운 노트를 써. 첫 줄은 '# 제목'. 머리말이나 설명 없이 노트 내용만. 소제목(##)·목록·체크박스(- [ ])를 알맞게 써. 숫자와 단위는 붙여 써(12월, 3시).\n` +
+        ? `오늘은 ${day}. 너는 사용자의 옵시디언 노트와 대화 기록을 근거로만 답하는 비서야.\n규칙: 아래 노트 발췌·대화 기록·캘린더 일정(그리고 앞 대화)에 있는 내용으로만 한국어로 짧고 분명하게 답해. 숫자와 단위는 붙여 써(12월, 3시). 대화를 물으면 최근 것부터 날짜와 함께(어느 방에서였는지도) 정리해. 메시지 수 같은 통계는 말하지 마. 없으면 "노트에서 찾지 못했어요"라고 해. 추측하거나 지어내지 마. 근거가 된 노트는 문장 끝에 [[노트 이름]]으로 붙여. 캘린더 일정에서 온 내용에는 [[ ]] 대신 (캘린더)라고 붙이고, 대화 기록에서 온 내용에는 (방 이름 대화)라고 붙여.\n${hblock}\n${src}${csrc}${ksrc}\n${prev.length ? '새 질문에만 답해. 앞 대화에서 이미 한 답을 되풀이하지 마.\n' : ''}새 질문: ${qline}`
+        : `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 쓰는 비서야.\n요청대로 마크다운 노트를 써. 첫 줄은 '# 제목'. 머리말이나 설명 없이 노트 내용만. 소제목(##)·목록·체크박스(- [ ])를 알맞게 써. 숫자와 단위는 붙여 써(12월, 3시).\n` +
           `참고 노트는 그대로 베끼지 말고 요청에 맞게 새로 구성해. 참고 노트의 체크 상태([ ]/[x])·날짜·숫자는 바꾸지 마. 요청과 관계없는 참고 노트는 쓰지 마.\n` +
+          (lastW ? `\n[앞에서 쓴 노트]\n${lastW.a}\n\n요청이 앞 노트를 고치라는 것(더 짧게·표로·말투 등)이면 앞 노트를 요청대로 실제로 바꿔서 전체를 다시 써. 그대로 베끼면 안 돼 — 줄 수·길이 요청은 꼭 지켜.\n` : '') +
           (curText ? `\n[지금 열린 노트: ${cur.basename}]\n${curText}\n` : '') +
-          (src ? `\n[참고할 내 노트 — 관련 있을 때만 쓰고, 쓴 곳에는 [[노트 이름]] 링크]\n${src}\n` : '') +
-          `\n노트에 없는 사실(날짜·숫자·사람)은 지어내지 마. 모르면 비워 두거나 '(확인 필요)'라고 적어.\n\n요청: ${q}`;
+          (src && !lastW ? `\n[참고할 내 노트 — 관련 있을 때만 쓰고, 쓴 곳에는 [[노트 이름]] 링크]\n${src}\n` : '') +
+          (cal && !lastW ? `\n[참고할 캘린더 일정 — 관련 있을 때만]\n${cal.text}\n` : '') +
+          `\n노트에 없는 사실(날짜·숫자·사람)은 지어내지 마. 모르면 비워 두거나 '(확인 필요)'라고 적어.\n\n요청: ${qline}`;
       let lastDraw = 0;
       const out = await AI.chat([{ role: 'user', content: prompt }], {
         max: mode === 'ask' ? 900 : 1800, temp: mode === 'ask' ? 0.2 : 0.5, signal: ctl.signal,
         status: (s) => st.setText(s),
-        onToken: (t) => { st.setText(mode === 'ask' ? '답하는 중…' : '쓰는 중…'); if (Date.now() - lastDraw > 120) { lastDraw = Date.now(); ans.setText(t); scroll(); } },
+        onToken: (x) => { st.setText(mode === 'ask' ? '답하는 중…' : '쓰는 중…'); if (Date.now() - lastDraw > 120) { lastDraw = Date.now(); ans.setText(x); scroll(); } },
       });
       st.remove();
-      ans.empty();
-      await MarkdownRenderer.render(this.app, out, ans, cur ? cur.path : '', this);
-      ans.querySelectorAll('a.internal-link').forEach((a) => {
-        a.onclick = (e) => { e.preventDefault(); this.app.workspace.openLinkText(a.getAttr('data-href') || a.getText(), '', e.metaKey || e.ctrlKey); };
-      });
-      if (hits.length) {
-        const low = out.toLowerCase();
-        const used = hits.filter((h) => low.includes('[[' + h.f.basename.toLowerCase()));
-        const show = used.length ? used : mode === 'ask' ? (convo ? [] : hits.slice(0, 1)) : hits;
-        if (show.length) {
-        const s = el.createDiv({ cls: 'rai-src' });
-        s.createSpan({ cls: 'rai-muted', text: mode === 'ask' ? '근거 노트 ' : '참고한 노트 ' });
-        for (const h of show) { const a = s.createEl('a', { cls: 'rai-src-link', text: h.f.basename }); a.onclick = (e) => this.app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(h.f); }
-        }
-      }
-      if (convo && convo.rooms.length) {
-        const s = el.createDiv({ cls: 'rai-src' });
-        s.createSpan({ cls: 'rai-muted', text: `💬 대화 ${convo.n}줄 ` });
-        for (const r of convo.rooms.slice(0, 6)) { const a = s.createEl('a', { cls: 'rai-src-link is-chat', text: (r.kind === '단체' ? '👥 ' : r.kind === '통화' ? '📞 ' : '') + r.room }); a.onclick = (e) => this.app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(r.file); }
-      }
-      const acts = el.createDiv({ cls: 'rai-acts' });
-      const btn = (t, fn, cta) => { const b = acts.createEl('button', { cls: cta ? 'mod-cta' : '', text: t }); b.onclick = fn; };
-      if (mode === 'write') {
-        btn('📝 새 노트로 저장', () => this.saveNew(out), true);
-        btn('⤵ 지금 노트에 넣기', () => this.insert(out));
-      }
-      btn('복사', () => { navigator.clipboard.writeText(out); new Notice('복사했어요'); });
-      if (mode === 'ask') btn('📝 이 답을 노트로', () => this.saveNew(`# ${q.replace(/[?？]\s*$/, '')}\n\n${out}`));
+      t.a = out;
+      const low = out.toLowerCase();
+      const used = hits.filter((h) => low.includes('[[' + h.f.basename.toLowerCase()));
+      const show = used.length ? used : mode === 'ask' ? (convo || cal ? [] : hits.slice(0, 1)) : lastW ? [] : hits;
+      if (cal) t.cal = { n: cal.n, from: cal.from, to: cal.to };
+      t.notes = show.map((h) => h.f.path);
+      if (convo) { t.people = convo.people; t.n = convo.n; t.rooms = convo.rooms.slice(0, 6).map((r) => ({ room: r.room, kind: r.kind, path: r.file.path })); }
+      await this.finish(el, t);
     } catch (e) {
-      st.setText(e.name === 'AbortError' ? '멈췄어요' : `⚠️ ${e.message || e}`); st.addClass('is-err');
+      t.err = true; t.a = e.name === 'AbortError' ? '멈췄어요' : `⚠️ ${e.message || e}`;
+      st.setText(t.a); st.addClass('is-err');
     } finally {
+      this.pending = null;
+      if (t.a && !(t.err && t.a === '멈췄어요')) {
+        this.sess.turns.push(t);
+        if (!this.sess.title) this.sess.title = q.slice(0, 40);
+        await this.saveSess();
+      }
       this.busy = null; if (this.sendBtn) this.sendBtn.setText('보내기'); scroll();
+      // 입력칸 안내(이어서 묻기)를 새로
+      const hint = this.containerEl.querySelector('.rai-hint');
+      if (hint && this.sess.turns.length) hint.setText(`💬 앞 대화에 이어서 답해요 (${this.sess.turns.length}) · 새 주제는 ＋ 새 대화`);
       this.plugin.ai.up().then((u) => { if (this.dot) { this.dot.setText(u ? '● 켜짐' : '○ 쓸 때 켜짐'); this.dot.toggleClass('is-on', u); } });
     }
   }
