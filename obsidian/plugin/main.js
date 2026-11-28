@@ -1775,6 +1775,14 @@ class ViewModal extends Modal {
 class ContactDash {
   constructor(plugin, root) { this.plugin = plugin; this.app = plugin.app; this.root = root; }
   async render() {
+    try { await this.draw(); }
+    catch (e) {
+      console.error('Rappo 라포 홈', e);
+      this.root.empty();
+      this.root.createDiv({ cls: 'rd-empty', text: `라포 홈을 그리지 못했어요: ${e.message || e}` });
+    }
+  }
+  async draw() {
     const r = this.root, P = this.plugin, app = this.app;
     r.empty(); r.addClass('ks-root', 'rd-root');
     const status = r.createDiv({ cls: 'ks-status', text: '연락 정리 중…' });
@@ -2130,13 +2138,20 @@ class ContactDashChild extends MarkdownRenderChild {
 class PersonView {
   constructor(plugin, root, name) { this.plugin = plugin; this.app = plugin.app; this.root = root; this.name = name; }
   async render() {
+    try { await this.draw(); }
+    catch (e) {
+      console.error('Rappo 사람 상세', e);
+      this.root.empty();
+      this.root.createDiv({ cls: 'rd-empty', text: `화면을 그리지 못했어요: ${e.message || e}` });
+    }
+  }
+  async draw() {
     const r = this.root, P = this.plugin, app = this.app, name = this.name;
     r.empty(); r.addClass('ks-root', 'rd-root');
     const status = r.createDiv({ cls: 'ks-status', text: '정리 중…' });
     await P.index.ensure();
     const allTasks = await P.tasks.load();
     const { dated } = await P.days.load();
-    const tasks = allTasks.filter((t) => (t.who || '').split(/,\s*/).some((w) => alias.includes(w)));
     const { ev } = await P.days.upcoming();
     status.remove();
     // 같은 사람의 다른 이름: 통화는 '홍길동', 카톡 1:1 방은 '길동'처럼 성을 뺀 이름인 경우
@@ -2145,6 +2160,7 @@ class PersonView {
     const okAlias = short && [...P.index.files.values()].some((c) => !c.call && c.room === short && c.msgs.some((m) => m.who === name)
       && new Set(c.msgs.map((m) => m.who).filter((w) => w !== '나')).size <= 2);
     const alias = okAlias ? [name, short] : [name];
+    const tasks = allTasks.filter((t) => (t.who || '').split(/,\s*/).some((w) => alias.includes(w)));
     const st = P.index.stats(name);
     for (const a of alias.slice(1)) {
       const s2 = P.index.stats(a);
