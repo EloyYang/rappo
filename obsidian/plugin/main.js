@@ -1967,7 +1967,7 @@ class ContactDash {
     mh.createSpan({ cls: 'cal-mtitle', text: `${y}년 ${m + 1}월` });
     const next = mh.createEl('button', { cls: 'cal-nav', text: '›', attr: { 'aria-label': '다음 달' } }); next.onclick = () => nav(1);
     if (this.calOff) { const tb = mh.createEl('button', { cls: 'cal-nav cal-today-btn', text: '오늘' }); tb.onclick = () => nav(-this.calOff); }
-    if (data && (this.calOff < -3 || this.calOff > 6)) mh.createSpan({ cls: 'rd-muted', text: ' · 이 달 일정은 아직 불러오지 않았어요 (3달 전~6달 뒤까지)' });
+    if (data && (this.calOff < -12 || this.calOff > 12)) mh.createSpan({ cls: 'rd-muted', text: ' · 이 달 일정은 아직 불러오지 않았어요 (1년 전~1년 뒤까지)' });
     if (data) { const ad = mh.createEl('a', { cls: 'rd-more', text: '＋ 일정' }); ad.onclick = () => new EventModal(P, null, td, data, () => this.render()).open(); }
     if (!data) mh.createSpan({ cls: 'rd-muted', text: ' · 캘린더 연결 전 (Rappo 설정 › 정리·AI·캘린더 › 접근 허용)' });
     const grid = left.createDiv({ cls: 'cal-grid' });
