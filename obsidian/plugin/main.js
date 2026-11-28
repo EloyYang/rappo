@@ -2438,6 +2438,23 @@ class Spend {
 
 }
 
+// 취소(음수)를 같은 달·같은 금액 결제와 짝짓는다: 같은 가게 > 다른 가게, 취소보다 앞선 결제 > 뒤, 가까운 날 순
+function pairCancels(list) {
+  for (const p of list) { delete p.canceledBy; delete p.cancels; }
+  const nm = (x) => String(x || '').replace(/^(주식회사|\(주\)|㈜)\s*/, '').replace(/\s*주식회사$/, '').replace(/\s+/g, '');
+  const at = (p) => `${p.date} ${p.time || ''}`;
+  const cancels = list.filter((p) => p.amount < 0).sort((a, b) => at(a).localeCompare(at(b)));
+  for (const c of cancels) {
+    const cands = list.filter((p) => p.amount === -c.amount && !p.canceledBy && p.date.slice(0, 7) === c.date.slice(0, 7));
+    if (!cands.length) continue;
+    const score = (p) => [nm(p.merchant) === nm(c.merchant) ? 0 : 1, at(p) <= at(c) ? 0 : 1, Math.abs(new Date(p.date) - new Date(c.date))];
+    cands.sort((a, b) => { const x = score(a), y = score(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; });
+    const p = cands[0];
+    p.canceledBy = c; c.cancels = p;
+  }
+  return list;
+}
+
 class SpendView {
   constructor(plugin, root) {
     this.plugin = plugin; this.app = plugin.app; this.root = root;
@@ -2460,6 +2477,7 @@ class SpendView {
     const ym = this.month, [y, m] = ym.split('-').map(Number);
     const prev = `${m === 1 ? y - 1 : y}-${pad(m === 1 ? 12 : m - 1)}`, next = `${m === 12 ? y + 1 : y}-${pad(m === 12 ? 1 : m + 1)}`;
     const cur = all.filter((p) => p.date.startsWith(ym));
+    pairCancels(cur);
     const total = cur.reduce((s, p) => s + p.amount, 0);
     const isNow = ym === today().slice(0, 7);
     const dayN = isNow ? Number(today().slice(8)) : new Date(y, m, 0).getDate();
@@ -2496,7 +2514,8 @@ class SpendView {
     const tile = (label, value, cls, hint) => { const t = kpi.createDiv({ cls: `rd-kpi ${cls || ''}` }); t.createDiv({ cls: 'rd-kpi-value', text: value }); t.createDiv({ cls: 'rd-kpi-label', text: label }); if (hint) t.createDiv({ cls: 'rd-kpi-hint', text: hint }); return t; };
     const diff = prevSame ? Math.round((total - prevSame) / Math.abs(prevSame) * 100) : null;
     tile(isNow ? '이번 달 지출' : `${m}월 지출`, won(total), 'doing', diff === null ? '지난달 기록 없음' : `지난달 같은 날까지보다 ${diff >= 0 ? diff + '% 더' : -diff + '% 덜'}`);
-    tile('결제', `${cur.filter((p) => p.amount > 0).length}건`, '', `취소·환불 ${cur.filter((p) => p.amount < 0).length}건`);
+    { const nc = cur.filter((p) => p.amount < 0).length, np = cur.filter((p) => p.amount < 0 && p.cancels).length;
+      tile('결제', `${cur.filter((p) => p.amount > 0 && !p.canceledBy).length}건`, '', nc ? `취소·환불 ${nc}건${np ? ` (결제 ${np}건 취소됨)` : ''}` : '취소·환불 없음'); }
     tile('하루 평균', won(total / Math.max(1, dayN)), '', `${dayN}일 기준`);
     if (budget) {
       const left = budget - total, t = tile('예산 남음', won(left), left < 0 ? 'over' : total > budget * 0.8 ? 'todo' : '', `${Math.round(total / budget * 100)}% 사용`);
@@ -2514,7 +2533,7 @@ class SpendView {
     // 날짜별 막대
     const db = section(row1.createDiv({ cls: 'rd-col' }), '📊 날짜별');
     const days = new Date(y, m, 0).getDate(), per = new Array(days + 1).fill(0);
-    for (const p of cur) if (p.amount > 0) per[Number(p.date.slice(8))] += p.amount;
+    for (const p of cur) if (p.amount > 0 && !p.canceledBy) per[Number(p.date.slice(8))] += p.amount;
     const max = Math.max(1, ...per);
     const chart = db.createDiv({ cls: 'sp-chart' });
     for (let d = 1; d <= days; d++) {
@@ -2542,7 +2561,7 @@ class SpendView {
     // 많이 쓴 곳
     const mb = section(row2.createDiv({ cls: 'rd-col' }), '🏪 많이 쓴 곳');
     const bym = new Map();
-    for (const p of cur) { const e = bym.get(p.merchant) || { v: 0, n: 0 }; e.v += p.amount; e.n++; bym.set(p.merchant, e); }
+    for (const p of cur) { if (p.canceledBy || p.cancels) continue; const e = bym.get(p.merchant) || { v: 0, n: 0 }; e.v += p.amount; e.n++; bym.set(p.merchant, e); }
     const tops = [...bym].filter(([, e]) => e.v > 0).sort((a, b) => b[1].v - a[1].v).slice(0, 7);
     if (!tops.length) mb.createDiv({ cls: 'rd-empty', text: '이 달 결제가 없어요' });
     for (const [name, e] of tops) {
@@ -2559,11 +2578,16 @@ class SpendView {
     else if (nCheck) { clear = createEl('a', { cls: 'rd-more sp-check-link', text: `🔎 분류 확인 ${nCheck}건 ›` }); clear.onclick = () => { this.cat = '__check'; this.shown = 50; this.render(); }; }
     const lb = section(row2.createDiv({ cls: 'rd-col' }), `🧾 결제 내역 ${list.length}건`, clear);
     for (const p of list.slice(0, this.shown)) {
-      const x = lb.createDiv({ cls: 'rd-list-row sp-row' + (p.amount < 0 ? ' is-cancel' : '') });
+      const x = lb.createDiv({ cls: 'rd-list-row sp-row' + (p.amount < 0 ? ' is-cancel' : '') + (p.canceledBy ? ' is-canceled' : '') });
       x.createSpan({ cls: 'rd-muted rd-when', text: `${p.date.slice(5).replace('-', '/')} ${p.time}` });
       const t = x.createDiv({ cls: 'rd-text sp-what' });
       t.createSpan({ text: p.merchant.replace(/^(주식회사|\(주\)|㈜)\s*/, '') });
       if (p.item && p.item !== '-') t.createSpan({ cls: 'rd-muted', text: ` · ${p.item}` });
+      // 같은 달 같은 금액 결제와 취소를 짝지어 보여 준다
+      const md = (d) => d.slice(5).replace('-', '/');
+      if (p.canceledBy) t.createSpan({ cls: 'sp-canceled', text: `취소됨 ${md(p.canceledBy.date)}`, attr: { 'aria-label': `${md(p.canceledBy.date)} ${p.canceledBy.time || ''}에 같은 금액이 취소됐어요` } });
+      if (p.cancels) t.createSpan({ cls: 'sp-canceled', text: `↩ ${md(p.cancels.date)} 결제 취소`, attr: { 'aria-label': `${md(p.cancels.date)} ${p.cancels.time || ''} ${p.cancels.merchant} 결제(${won(p.cancels.amount)})의 취소` } });
+      else if (p.amount < 0) t.createSpan({ cls: 'sp-canceled is-alone', text: '이 달에 같은 금액 결제 없음' });
       if (p.check) t.createSpan({ cls: 'sp-check', text: '분류 확인', attr: { 'aria-label': '여러 가지를 파는 곳이에요. 무엇을 샀는지 분류를 골라 주세요' } });
       const sel = x.createEl('select', { cls: 'dropdown sp-sel' });
       for (const k of P.spend.cats()) sel.createEl('option', { value: k, text: catLabel(k) });
@@ -2597,13 +2621,13 @@ class SpendView {
   renderYear(r, all) {
     const P = this.plugin, y = this.year, nowY = Number(today().slice(0, 4));
     const isNow = y === nowY;
-    const cur = all.filter((p) => p.date.startsWith(`${y}-`));
+    const cur = pairCancels(all.filter((p) => p.date.startsWith(`${y}-`)));
     const total = cur.reduce((s, p) => s + p.amount, 0);
     const cutMD = isNow ? today().slice(5) : '12-31';
     const lastSame = all.filter((p) => p.date.startsWith(`${y - 1}-`) && p.date.slice(5) <= cutMD).reduce((s, p) => s + p.amount, 0);
     const months = isNow ? Number(today().slice(5, 7)) : 12;
     const byM = new Array(13).fill(0), cnt = new Array(13).fill(0);
-    for (const p of cur) { const mm = Number(p.date.slice(5, 7)); byM[mm] += p.amount; if (p.amount > 0) cnt[mm]++; }
+    for (const p of cur) { const mm = Number(p.date.slice(5, 7)); byM[mm] += p.amount; if (p.amount > 0 && !p.canceledBy) cnt[mm]++; }
     const budget = Number(P.data.budget || 0);
     const man = (v) => (Math.abs(v) >= 10000 ? `${Math.round(v / 10000).toLocaleString()}만` : `${Math.round(v / 1000)}천`);
     const toMonth = (mm) => { this.mode = 'month'; this.month = `${y}-${pad(mm)}`; this.render(); };
@@ -2627,7 +2651,7 @@ class SpendView {
     const bestM = byM.reduce((b, v, i) => (i && v > byM[b] ? i : b), 1);
     tile('가장 많이 쓴 달', `${bestM}월`, 'todo', won(byM[bestM]));
     if (budget) { const left = budget * months - total; tile('예산 대비', won(left), left < 0 ? 'over' : '', `한 달 ${won(budget)} × ${months}개월`); }
-    else tile('결제', `${cur.filter((p) => p.amount > 0).length}건`, '', `취소·환불 ${cur.filter((p) => p.amount < 0).length}건`);
+    else tile('결제', `${cur.filter((p) => p.amount > 0 && !p.canceledBy).length}건`, '', `취소·환불 ${cur.filter((p) => p.amount < 0).length}건${cur.some((p) => p.cancels) ? ` (결제 ${cur.filter((p) => p.cancels).length}건 취소됨)` : ''}`);
 
     const section = (parent, title) => {
       const s = parent.createDiv({ cls: 'rd-section' });
@@ -2663,7 +2687,7 @@ class SpendView {
     // 많이 쓴 곳 (한 해)
     const tb = section(row2.createDiv({ cls: 'rd-col' }), '🏪 많이 쓴 곳');
     const bym = new Map();
-    for (const p of cur) { const e = bym.get(p.merchant) || { v: 0, n: 0 }; e.v += p.amount; e.n++; bym.set(p.merchant, e); }
+    for (const p of cur) { if (p.canceledBy || p.cancels) continue; const e = bym.get(p.merchant) || { v: 0, n: 0 }; e.v += p.amount; e.n++; bym.set(p.merchant, e); }
     for (const [name, e] of [...bym].filter(([, e]) => e.v > 0).sort((a, b) => b[1].v - a[1].v).slice(0, 10)) {
       const x = tb.createDiv({ cls: 'rd-list-row' });
       x.createSpan({ cls: 'rd-text', text: name.replace(/^(주식회사|\(주\)|㈜)\s*/, '') });

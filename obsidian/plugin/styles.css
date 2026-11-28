@@ -410,3 +410,9 @@ div.ks-section-head { cursor: default; }
 .rai-sug button { font-size: 12px; padding: 3px 10px; height: auto; border-radius: 12px; box-shadow: none !important; background: transparent !important; border: 1px solid var(--interactive-accent) !important; color: var(--interactive-accent); }
 .rai-sug button:hover { background: color-mix(in srgb, var(--interactive-accent) 10%, transparent) !important; }
 .rai-ev-dup { font-size: 12px; color: var(--color-orange, #d97706); }
+
+/* v28.5 소비: 결제 ↔ 취소 짝 */
+.sp-row.is-canceled .sp-amt { text-decoration: line-through; color: var(--text-faint); }
+.sp-row.is-canceled .sp-what > span:first-child { color: var(--text-muted); }
+.sp-canceled { margin-left: 6px; font-size: 11px; padding: 0 6px; border-radius: 8px; background: color-mix(in srgb, #ef4444 12%, transparent); color: #ef4444; white-space: nowrap; }
+.sp-canceled.is-alone { background: var(--background-modifier-hover); color: var(--text-faint); }
