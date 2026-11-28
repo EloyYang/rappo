@@ -322,3 +322,23 @@ div.ks-section-head { cursor: default; }
 .cal-today-btn { font-size: 12px; }
 .cal-mhead .cal-mtitle { min-width: 118px; text-align: center; }
 .cal-mhead .rd-more { margin-left: auto; }
+
+/* v27 라포 홈 달력: 캘린더 골라 보기 */
+.cal-pick-wrap { position: relative; margin-left: auto; }
+.cal-pick-wrap + .rd-more { margin-left: 10px; }
+.cal-pick-btn { width: auto !important; padding: 0 10px !important; font-size: 12px; }
+.cal-pick-btn.is-filtered { color: var(--interactive-accent); border-color: var(--interactive-accent) !important; }
+.cal-pick { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 230px; max-height: 360px; overflow-y: auto;
+  background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.16); padding: 6px; }
+.cal-pick.is-open { display: block; }
+.cal-pick-src { font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 8px 8px 4px; }
+.cal-pick-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.cal-pick-row:hover { background: var(--background-modifier-hover); }
+.cal-pick-box { flex: none; width: 16px; height: 16px; border-radius: 4px; border: 2px solid var(--c); box-sizing: border-box; position: relative; }
+.cal-pick-row.is-on .cal-pick-box { background: var(--c); }
+.cal-pick-row.is-on .cal-pick-box::after { content: ''; position: absolute; left: 4px; top: 0px; width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.cal-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-pick-row:not(.is-on) .cal-pick-name { color: var(--text-muted); }
+.cal-pick-foot { display: flex; justify-content: space-between; border-top: 1px solid var(--background-modifier-border); margin-top: 4px; padding: 8px 8px 2px; font-size: 12px; }
+.cal-pick-foot a { cursor: pointer; color: var(--text-accent); }

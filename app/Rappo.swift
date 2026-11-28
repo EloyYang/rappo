@@ -650,7 +650,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
              "editable": e.calendar.allowsContentModifications, "location": e.location ?? "", "notes": e.notes ?? ""]
         }
         let cals = events.calendars(for: .event).filter { $0.allowsContentModifications }.map { ["id": $0.calendarIdentifier, "title": $0.title, "color": hex($0.cgColor)] }
-        let obj: [String: Any] = ["made": f.string(from: Date()), "events": list, "calendars": cals, "defaultCal": s.calId]
+        // 라포 홈에서 골라 보기용: 모든 캘린더 (계정별)
+        let allCals = events.calendars(for: .event).sorted { ($0.source.title, $0.title) < ($1.source.title, $1.title) }
+            .map { ["id": $0.calendarIdentifier, "title": $0.title, "color": hex($0.cgColor), "source": $0.source.title] }
+        let obj: [String: Any] = ["made": f.string(from: Date()), "events": list, "calendars": cals, "allCalendars": allCals, "defaultCal": s.calId]
         if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
             try? data.write(to: URL(fileURLWithPath: pluginDir + "/calendar-events.json"))
         }

@@ -1955,7 +1955,14 @@ class ContactDash {
     const now = new Date(), td = today();
     const left = card.createDiv({ cls: 'cal-month' });
     const right = card.createDiv({ cls: 'cal-list' });
-    const evs = ((data && data.events) || []).map((e) => ({ ...e, d: e.start.slice(0, 10), de: e.end.slice(0, 10), t: e.allDay ? '' : e.start.slice(11, 16), te: e.allDay ? '' : e.end.slice(11, 16) }));
+    // 캘린더 골라 보기: 끈 캘린더는 P.data.calHidden 에 (구글 캘린더 왼쪽 목록처럼)
+    const hidden = new Set(P.data.calHidden || []);
+    const allCals = (data && data.allCalendars) || [];
+    if (data && !allCals.length) {   // 예전 앱이 만든 파일: 일정에서 캘린더 목록을 모은다
+      const seen = new Map(); for (const e of data.events || []) if (e.calId && !seen.has(e.calId)) seen.set(e.calId, { id: e.calId, title: e.calendar, color: e.color, source: '' });
+      allCals.push(...seen.values());
+    }
+    const evs = ((data && data.events) || []).filter((e) => !hidden.has(e.calId)).map((e) => ({ ...e, d: e.start.slice(0, 10), de: e.end.slice(0, 10), t: e.allDay ? '' : e.start.slice(11, 16), te: e.allDay ? '' : e.end.slice(11, 16) }));
     const hm = (t) => `${Number(t.slice(0, 2)) < 12 ? '오전' : '오후'} ${((Number(t.slice(0, 2)) + 11) % 12) + 1}${t.slice(3) === '00' ? '시' : ':' + t.slice(3)}`;
     // 왼쪽: 달력 (일~토, 6주) — ‹ › 로 달 넘기기, '오늘'로 이번 달
     this.calOff = this.calOff || 0;
@@ -1968,6 +1975,26 @@ class ContactDash {
     const next = mh.createEl('button', { cls: 'cal-nav', text: '›', attr: { 'aria-label': '다음 달' } }); next.onclick = () => nav(1);
     if (this.calOff) { const tb = mh.createEl('button', { cls: 'cal-nav cal-today-btn', text: '오늘' }); tb.onclick = () => nav(-this.calOff); }
     if (data && (this.calOff < -12 || this.calOff > 12)) mh.createSpan({ cls: 'rd-muted', text: ' · 이 달 일정은 아직 불러오지 않았어요 (1년 전~1년 뒤까지)' });
+    if (data && allCals.length) {
+      const pickWrap = mh.createDiv({ cls: 'cal-pick-wrap' });
+      const pb = pickWrap.createEl('button', { cls: 'cal-nav cal-pick-btn' + (hidden.size ? ' is-filtered' : ''),
+        text: hidden.size ? `캘린더 ${allCals.length - allCals.filter((c) => hidden.has(c.id)).length}/${allCals.length} ▾` : '캘린더 ▾' });
+      const panel = pickWrap.createDiv({ cls: 'cal-pick' + (this.calPick ? ' is-open' : '') });
+      pb.onclick = (e) => { e.stopPropagation(); this.calPick = !this.calPick; panel.toggleClass('is-open', this.calPick); };
+      const redraw = () => { const nxt = card.nextSibling; card.remove(); this.calendarCard(r, nxt); };
+      const save = async (ids) => { P.data.calHidden = [...ids]; await P.saveData(P.data); this.calPick = true; redraw(); };
+      let src = null;
+      for (const c of allCals) {
+        if ((c.source || '') !== src) { src = c.source || ''; if (src) panel.createDiv({ cls: 'cal-pick-src', text: src }); }
+        const row = panel.createDiv({ cls: 'cal-pick-row' + (hidden.has(c.id) ? '' : ' is-on') });
+        const box = row.createSpan({ cls: 'cal-pick-box' }); box.style.setProperty('--c', c.color || '#7c5cff');
+        row.createSpan({ cls: 'cal-pick-name', text: c.title || '(이름 없음)' });
+        row.onclick = () => { const h = new Set(hidden); if (h.has(c.id)) h.delete(c.id); else h.add(c.id); save(h); };
+      }
+      const foot = panel.createDiv({ cls: 'cal-pick-foot' });
+      const all = foot.createEl('a', { text: '모두 보기' }); all.onclick = () => save([]);
+      const close = foot.createEl('a', { text: '닫기' }); close.onclick = () => { this.calPick = false; panel.removeClass('is-open'); };
+    }
     if (data) { const ad = mh.createEl('a', { cls: 'rd-more', text: '＋ 일정' }); ad.onclick = () => new EventModal(P, null, td, data, () => this.render()).open(); }
     if (!data) mh.createSpan({ cls: 'rd-muted', text: ' · 캘린더 연결 전 (Rappo 설정 › 정리·AI·캘린더 › 접근 허용)' });
     const grid = left.createDiv({ cls: 'cal-grid' });
