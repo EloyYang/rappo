@@ -2,7 +2,7 @@
 // 노트 폴더는 이 플러그인 폴더의 data.json {"base": "..."} (Rappo 설치 프로그램이 적음). 없으면 '2. Areas/통화기록'.
 // - ```대화검색``` (또는 ```카톡검색```) 코드블록 → 노트 안에 검색 화면
 // - 명령 "대화·통화 검색" / 리본 아이콘 → 어디서나 창으로
-const { Plugin, Modal, MarkdownRenderChild, MarkdownView, TFile, Notice, debounce } = require('obsidian');
+const { Plugin, Modal, MarkdownRenderChild, MarkdownView, TFile, Notice, debounce, ItemView, MarkdownRenderer, requestUrl } = require('obsidian');
 
 let BASE = '2. Areas/통화기록';
 let CONTACTS = BASE + '/연락처';
@@ -2815,6 +2815,310 @@ class DaysChild extends MarkdownRenderChild {
   onload() { new DaysView(this.plugin, this.containerEl).render(); }
 }
 
+// ───────────────── Rappo AI: 로컬 모델(MLX)로 내 노트에게 묻기 · 노트 쓰기 ─────────────────
+// 오른쪽 사이드 패널. 모델은 Rappo 가 쓰는 것과 같은 mlx_lm 서버(127.0.0.1:8765)를 쓰고,
+// 꺼져 있으면 여기서 띄웠다가 10분 동안 안 쓰면 내린다 (메모리를 돌려줌). 노트는 내 맥 밖으로 나가지 않는다.
+const AI_VIEW = 'rappo-ai';
+const AI_MODEL = 'mlx-community/Qwen3.5-4B-MLX-4bit';
+const AI_URL = 'http://127.0.0.1:8765';
+const STOP_WORDS = new Set(['노트', '내용', '관련', '정리', '알려줘', '알려', '줘', '뭐야', '뭐', '어떻게', '있어', '있나', '찾아줘', '찾아', '대해', '대한', '무엇', '언제', '어디', '누구', '해줘', '써줘', '만들어줘', '작성', '작성해줘']);
+
+class LocalAI {
+  constructor(plugin) { this.plugin = plugin; this.proc = null; this.idle = null; }
+  get model() { return this.plugin.data.aiModel || AI_MODEL; }
+  async up() {
+    try { const r = await requestUrl({ url: AI_URL + '/v1/models', throw: false }); return r.status === 200; } catch (e) { return false; }
+  }
+  async ensure(status) {
+    if (await this.up()) return;
+    const os = require('os'), fs = require('fs'), path = require('path');
+    const py = path.join(os.homedir(), '.venvs/mlx-llm/bin/python');
+    if (!fs.existsSync(py)) throw new Error('로컬 모델(MLX)이 설치돼 있지 않아요. Rappo 설정 › 정리·AI·캘린더에서 로컬 모델을 켜 주세요.');
+    if (!this.proc) {
+      status && status('로컬 모델을 켜는 중… (처음 한 번 10초쯤)');
+      this.proc = require('child_process').spawn(py, ['-m', 'mlx_lm.server', '--model', this.model, '--port', '8765',
+        '--chat-template-args', '{"enable_thinking": false}'], { stdio: 'ignore', env: { ...process.env, HF_HUB_OFFLINE: '1' } });
+      this.proc.on('exit', () => { this.proc = null; });
+    }
+    for (let i = 0; i < 120; i++) {
+      if (await this.up()) return;
+      if (!this.proc) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    throw new Error('로컬 모델 서버를 켜지 못했어요');
+  }
+  touch() {
+    clearTimeout(this.idle);
+    this.idle = setTimeout(() => this.stop(), 10 * 60 * 1000);
+  }
+  stop() { if (this.proc) { try { this.proc.kill(); } catch (e) { /* */ } this.proc = null; } }
+  // 한 번 묻기. onToken 이 있으면 글자가 나오는 대로 받는다.
+  async chat(messages, { max = 1500, temp = 0.3, onToken, signal, status } = {}) {
+    await this.ensure(status);
+    this.touch();
+    const body = { model: this.model, messages, temperature: temp, max_tokens: max, chat_template_kwargs: { enable_thinking: false } };
+    let out = '';
+    try {
+      const r = await fetch(AI_URL + '/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, stream: true }), signal });
+      if (!r.ok || !r.body) throw new Error('stream ' + r.status);
+      const rd = r.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await rd.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+          if (!line.startsWith('data:')) continue;
+          const d = line.slice(5).trim();
+          if (d === '[DONE]') continue;
+          try { const t = JSON.parse(d).choices?.[0]?.delta?.content || ''; if (t) { out += t; onToken && onToken(out); } } catch (e) { /* 조각 */ }
+        }
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      if (!out) {   // 스트리밍이 안 되면 한 번에
+        const r = await requestUrl({ url: AI_URL + '/v1/chat/completions', method: 'POST', contentType: 'application/json', body: JSON.stringify(body) });
+        out = r.json.choices[0].message.content || '';
+        onToken && onToken(out);
+      }
+    }
+    this.touch();
+    // 작은 모델이 '12 월', '3 시'처럼 띄어 쓰는 버릇 고치기
+    return out.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/(\d) (월|일|시|분|초|팀|명|개|원|만원|천원|년|주|번|살|층|호)(?![가-힣])/g, '$1$2').replace(/(\d) (월|일|시|분|년|주|번|명|개|원)(?=[\s.,)~(]|$)/gm, '$1$2').trim();
+  }
+}
+
+// 노트 찾기: 핵심어로 점수 (제목 > 본문 횟수, 여러 핵심어가 함께 있으면 더), 근거 발췌를 붙인다
+const JOSA = /(으로|에서|에게|한테|까지|부터|이랑|하고|이나|이면|이다|이야|입니다|은|는|이|가|을|를|에|의|도|로|와|과|랑|만|요)$/;
+function aiTerms(q, extra) {
+  const out = [];
+  for (let w of [...(extra || []), ...String(q).split(/[\s,.?!·'"“”‘’()\[\]]+/)]) {
+    w = String(w || '').trim().toLowerCase();
+    if (!w) continue;
+    const s = w.length > 2 ? w.replace(JOSA, '') : w;
+    for (const x of [w, s]) if (x.length >= 2 && !STOP_WORDS.has(x) && !out.includes(x)) out.push(x);
+  }
+  return out.slice(0, 12);
+}
+class NoteFinder {
+  constructor(plugin) { this.plugin = plugin; this.app = plugin.app; this.cache = new Map(); }
+  skip(p, logs) {
+    return p.startsWith('.') || p.startsWith('_') || p.startsWith('attachments/') || (!logs && (p.startsWith(KAKAO + '/') || p.startsWith(CALLS + '/')));
+  }
+  async text(f) {
+    const c = this.cache.get(f.path);
+    if (c && c.m === f.stat.mtime) return c.t;
+    const t = await this.app.vault.cachedRead(f);
+    this.cache.set(f.path, { m: f.stat.mtime, t, l: t.toLowerCase() });
+    return t;
+  }
+  async find(terms, { logs = false, limit = 6 } = {}) {
+    if (!terms.length) return [];
+    const res = [];
+    const now = Date.now();
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      if (this.skip(f.path, logs)) continue;
+      await this.text(f);
+      const low = this.cache.get(f.path).l, title = f.basename.toLowerCase();
+      let score = 0, hit = 0;
+      for (const t of terms) {
+        let n = 0, i = -1;
+        while ((i = low.indexOf(t, i + 1)) >= 0 && n < 12) n++;
+        const inT = title.includes(t);
+        if (n || inT) hit++;
+        score += (inT ? 8 : 0) + Math.min(n, 12) * (t.length >= 3 ? 1.5 : 1);
+      }
+      if (!hit) continue;
+      score += (hit - 1) * 6 + Math.max(0, 3 - (now - f.stat.mtime) / (86400000 * 60));
+      res.push({ f, score, hit });
+    }
+    res.sort((a, b) => b.hit - a.hit || b.score - a.score);
+    // 맨 위와 거리가 먼 노트는 빼서 모델이 헷갈리지 않게
+    const top = res[0];
+    return res.filter((r) => r === top || (r.hit >= Math.max(1, top.hit - 1) && r.score >= top.score * 0.35)).slice(0, limit);
+  }
+  // 노트에서 핵심어 둘레만 잘라 (모델 문맥이 짧으니)
+  snippet(f, terms, size = 1100) {
+    const t = this.cache.get(f.path).t.replace(/^---\n[\s\S]*?\n---\n/, '');
+    if (t.length <= size) return t.trim();
+    const low = t.toLowerCase(), spots = [];
+    for (const w of terms) { const i = low.indexOf(w); if (i >= 0) spots.push(i); }
+    spots.sort((a, b) => a - b);
+    const parts = [], each = Math.floor(size / Math.max(1, Math.min(3, spots.length)));
+    let last = -1;
+    for (const s of spots.slice(0, 3)) {
+      const a = Math.max(0, s - Math.floor(each / 3), last), b = Math.min(t.length, a + each);
+      if (b <= a) continue;
+      parts.push(t.slice(a, b).trim()); last = b;
+    }
+    return (parts.length ? parts.join('\n…\n') : t.slice(0, size)).trim();
+  }
+}
+
+class AIView extends ItemView {
+  constructor(leaf, plugin) {
+    super(leaf); this.plugin = plugin; this.mode = 'ask'; this.logs = false; this.useNote = false; this.useVault = true; this.busy = null;
+  }
+  getViewType() { return AI_VIEW; }
+  getDisplayText() { return 'Rappo AI'; }
+  getIcon() { return 'sparkles'; }
+  async onOpen() {
+    this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
+      if (leaf && leaf.view instanceof MarkdownView) { this.lastMd = leaf.view; this.drawOpts && this.drawOpts(); }
+    }));
+    this.lastMd = this.app.workspace.getActiveViewOfType(MarkdownView) || this.lastMd;
+    this.draw();
+  }
+  async onClose() { this.busy && this.busy.abort(); }
+  draw() {
+    const c = this.containerEl.children[1];
+    c.empty(); c.addClass('rai');
+    const head = c.createDiv({ cls: 'rai-head' });
+    head.createSpan({ cls: 'rai-title', text: '✨ Rappo AI' });
+    this.dot = head.createSpan({ cls: 'rai-state' });
+    this.plugin.ai.up().then((u) => { this.dot.setText(u ? '● 켜짐' : '○ 쓸 때 켜짐'); this.dot.toggleClass('is-on', u); });
+    const tabs = c.createDiv({ cls: 'rai-tabs' });
+    for (const [k, t] of [['ask', '🔎 노트에게 묻기'], ['write', '✍️ 노트 쓰기']]) {
+      const b = tabs.createEl('button', { cls: 'rai-tab' + (this.mode === k ? ' is-active' : ''), text: t });
+      b.onclick = () => { this.mode = k; this.draw(); };
+    }
+    this.log = c.createDiv({ cls: 'rai-log' });
+    if (!this.cards || !this.cards.length) this.empty();
+    else for (const el of this.cards) this.log.appendChild(el);
+    const box = c.createDiv({ cls: 'rai-input' });
+    this.opts = box.createDiv({ cls: 'rai-opts' });
+    this.drawOpts = () => {
+      this.opts.empty();
+      const chip = (label, on, fn) => { const x = this.opts.createEl('button', { cls: 'rai-chip' + (on ? ' is-on' : ''), text: label }); x.onclick = () => { fn(); this.drawOpts(); }; };
+      if (this.mode === 'ask') chip('💬 대화·통화 기록도', this.logs, () => { this.logs = !this.logs; });
+      else {
+        chip('📚 내 노트 참고', this.useVault, () => { this.useVault = !this.useVault; });
+        const f = this.lastMd && this.lastMd.file;
+        chip(f ? `📄 지금 노트: ${f.basename.slice(0, 14)}` : '📄 지금 노트 (열린 노트 없음)', this.useNote && !!f, () => { this.useNote = !this.useNote; });
+      }
+    };
+    this.drawOpts();
+    this.ta = box.createEl('textarea', { cls: 'rai-ta', attr: { rows: 3, placeholder: this.mode === 'ask'
+      ? '예) 길동이형이랑 12월 일정 어떻게 정했지?\n(Enter 보내기 · Shift+Enter 줄바꿈)'
+      : '예) 다음 주 워크숍 준비 체크리스트 노트 만들어줘\n예) 지금 노트를 3줄로 요약해줘' } });
+    this.ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); } };
+    const row = box.createDiv({ cls: 'rai-send-row' });
+    row.createSpan({ cls: 'rai-hint', text: '내 맥 안에서만 돌아가요 · 노트는 밖으로 나가지 않아요' });
+    this.sendBtn = row.createEl('button', { cls: 'mod-cta rai-send', text: this.busy ? '■ 멈추기' : '보내기' });
+    this.sendBtn.onclick = () => (this.busy ? this.busy.abort() : this.send());
+    setTimeout(() => this.ta.focus(), 50);
+  }
+  empty() {
+    const e = this.log.createDiv({ cls: 'rai-empty' });
+    if (this.mode === 'ask') {
+      e.createDiv({ text: '내 노트에서 찾아서, 노트에 적힌 것만으로 답해요.' });
+      e.createDiv({ cls: 'rai-muted', text: '답 아래에 근거 노트가 붙어요 — 눌러서 바로 열기' });
+    } else {
+      e.createDiv({ text: '요청대로 노트를 써 드려요. 관련 노트나 지금 열린 노트를 참고할 수 있어요.' });
+      e.createDiv({ cls: 'rai-muted', text: '다 쓰면 새 노트로 저장하거나, 지금 노트의 커서 자리에 넣을 수 있어요' });
+    }
+  }
+  card(q) {
+    if (!this.cards || !this.cards.length) { this.log.empty(); this.cards = []; }
+    const el = this.log.createDiv({ cls: 'rai-card' });
+    el.createDiv({ cls: 'rai-q', text: q });
+    this.cards.push(el);
+    return el;
+  }
+  async send() {
+    const q = this.ta.value.trim();
+    if (!q || this.busy) return;
+    this.ta.value = '';
+    const mode = this.mode, el = this.card((mode === 'write' ? '✍️ ' : '') + q);
+    const st = el.createDiv({ cls: 'rai-status', text: '노트 찾는 중…' });
+    const ans = el.createDiv({ cls: 'rai-a markdown-rendered' });
+    const ctl = new AbortController(); this.busy = ctl; this.sendBtn.setText('■ 멈추기');
+    const P = this.plugin, AI = P.ai, F = P.finder;
+    const scroll = () => { this.log.scrollTop = this.log.scrollHeight; };
+    try {
+      // 1) 핵심어 (모델에게 동의어까지 몇 개) → 노트 찾기
+      let hits = [], terms = [];
+      const needVault = mode === 'ask' || this.useVault;
+      if (needVault) {
+        let kw = [];
+        try {
+          const raw = await AI.chat([{ role: 'user', content: `아래 ${mode === 'ask' ? '질문' : '요청'}에 맞는 옵시디언 노트를 찾으려고 해. 노트 본문에 나올 법한 검색어 3~6개(사람 이름, 고유명사, 핵심 명사, 비슷한 말)를 JSON 배열로만 답해. 예: ["워크숍","준비물","체크리스트"]\n\n${q}` }],
+            { max: 80, temp: 0, signal: ctl.signal, status: (s) => st.setText(s) });
+          const m = raw.match(/\[[\s\S]*?\]/); kw = m ? JSON.parse(m[0]) : [];
+        } catch (e) { if (e.name === 'AbortError') throw e; }
+        terms = aiTerms(q, kw);
+        st.setText('노트 찾는 중…');
+        hits = await F.find(terms, { logs: mode === 'ask' && this.logs, limit: mode === 'ask' ? 6 : 4 });
+      }
+      const src = hits.map((h, i) => `[노트 ${i + 1}] [[${h.f.basename}]] (${h.f.parent ? h.f.parent.path : ''})\n${F.snippet(h.f, terms, mode === 'ask' ? 1100 : 900)}`).join('\n\n');
+      const cur = mode === 'write' && this.useNote && this.lastMd && this.lastMd.file ? this.lastMd.file : null;
+      const curText = cur ? (await this.app.vault.cachedRead(cur)).replace(/^---\n[\s\S]*?\n---\n/, '').slice(0, 6000) : '';
+      if (hits.length) {
+        const s = el.createDiv({ cls: 'rai-src' });
+        s.createSpan({ cls: 'rai-muted', text: mode === 'ask' ? '근거 노트 ' : '참고한 노트 ' });
+        for (const h of hits) { const a = s.createEl('a', { cls: 'rai-src-link', text: h.f.basename }); a.onclick = (e) => this.app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(h.f); }
+        el.appendChild(s);
+      }
+      if (mode === 'ask' && !hits.length) { st.remove(); ans.setText('관련된 노트를 찾지 못했어요. 다른 낱말로 물어봐 주세요.' + (this.logs ? '' : ' (대화·통화 기록까지 찾으려면 아래 💬 를 켜 주세요)')); return; }
+      st.setText(mode === 'ask' ? `노트 ${hits.length}개를 읽고 답하는 중…` : '쓰는 중…');
+      const day = today();
+      const prompt = mode === 'ask'
+        ? `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 근거로만 답하는 비서야.\n규칙: 아래 노트 발췌에 있는 내용으로만 한국어로 짧고 분명하게 답해. 숫자와 단위는 붙여 써(12월, 3시). 발췌에 없으면 "노트에서 찾지 못했어요"라고 해. 추측하거나 지어내지 마. 근거가 된 노트는 문장 끝에 [[노트 이름]]으로 붙여.\n\n${src}\n\n질문: ${q}`
+        : `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 쓰는 비서야.\n요청대로 새 마크다운 노트를 써. 첫 줄은 '# 제목'. 머리말이나 설명 없이 노트 내용만. 소제목(##)·목록·체크박스(- [ ])를 알맞게 써. 숫자와 단위는 붙여 써(12월, 3시).\n` +
+          `참고 노트는 그대로 베끼지 말고 요청에 맞게 새로 구성해. 참고 노트의 체크 상태([ ]/[x])·날짜·숫자는 바꾸지 마. 요청과 관계없는 참고 노트는 쓰지 마.\n` +
+          (curText ? `\n[지금 열린 노트: ${cur.basename}]\n${curText}\n` : '') +
+          (src ? `\n[참고할 내 노트 — 관련 있을 때만 쓰고, 쓴 곳에는 [[노트 이름]] 링크]\n${src}\n` : '') +
+          `\n노트에 없는 사실(날짜·숫자·사람)은 지어내지 마. 모르면 비워 두거나 '(확인 필요)'라고 적어.\n\n요청: ${q}`;
+      let lastDraw = 0;
+      const out = await AI.chat([{ role: 'user', content: prompt }], {
+        max: mode === 'ask' ? 900 : 1800, temp: mode === 'ask' ? 0.2 : 0.5, signal: ctl.signal,
+        status: (s) => st.setText(s),
+        onToken: (t) => { st.setText(mode === 'ask' ? '답하는 중…' : '쓰는 중…'); if (Date.now() - lastDraw > 120) { lastDraw = Date.now(); ans.setText(t); scroll(); } },
+      });
+      st.remove();
+      ans.empty();
+      await MarkdownRenderer.render(this.app, out, ans, cur ? cur.path : '', this);
+      ans.querySelectorAll('a.internal-link').forEach((a) => {
+        a.onclick = (e) => { e.preventDefault(); this.app.workspace.openLinkText(a.getAttr('data-href') || a.getText(), '', e.metaKey || e.ctrlKey); };
+      });
+      const acts = el.createDiv({ cls: 'rai-acts' });
+      const btn = (t, fn, cta) => { const b = acts.createEl('button', { cls: cta ? 'mod-cta' : '', text: t }); b.onclick = fn; };
+      if (mode === 'write') {
+        btn('📝 새 노트로 저장', () => this.saveNew(out), true);
+        btn('⤵ 지금 노트에 넣기', () => this.insert(out));
+      }
+      btn('복사', () => { navigator.clipboard.writeText(out); new Notice('복사했어요'); });
+      if (mode === 'ask') btn('📝 이 답을 노트로', () => this.saveNew(`# ${q.replace(/[?？]\s*$/, '')}\n\n${out}`));
+    } catch (e) {
+      st.setText(e.name === 'AbortError' ? '멈췄어요' : `⚠️ ${e.message || e}`); st.addClass('is-err');
+    } finally {
+      this.busy = null; if (this.sendBtn) this.sendBtn.setText('보내기'); scroll();
+      this.plugin.ai.up().then((u) => { if (this.dot) { this.dot.setText(u ? '● 켜짐' : '○ 쓸 때 켜짐'); this.dot.toggleClass('is-on', u); } });
+    }
+  }
+  async saveNew(md) {
+    const m = md.match(/^#\s+(.+)$/m);
+    const title = safeName(m ? m[1] : md.split('\n')[0]) || 'AI 노트';
+    const body = m ? md.replace(m[0], '').replace(/^\n+/, '') : md;
+    const dir = this.app.vault.getAbstractFileByPath('0. Inbox') ? '0. Inbox/' : '';
+    let name = title, n = 2;
+    while (this.app.vault.getAbstractFileByPath(`${dir}${name}.md`)) name = `${title} (${n++})`;
+    const f = await this.app.vault.create(`${dir}${name}.md`, `---\ntype: note\nstatus: 메모용\narea: []\nproject: []\ncreated: ${today()}\ntags: [AI]\n---\n${body.trim()}\n`);
+    await this.app.workspace.getLeaf('tab').openFile(f);
+    new Notice(`'${name}' 노트를 만들었어요`);
+  }
+  insert(md) {
+    const v = this.lastMd;
+    if (!v || !v.editor || !v.file) { new Notice('넣을 노트를 먼저 열어 주세요'); return; }
+    if (v.getMode && v.getMode() !== 'source') { new Notice('노트를 편집 모드로 바꾼 뒤 넣어 주세요'); return; }
+    v.editor.replaceSelection(md.replace(/^#\s+.+\n+/, '') + '\n');
+    this.app.workspace.setActiveLeaf(v.leaf, { focus: true });
+    new Notice(`'${v.file.basename}'에 넣었어요`);
+  }
+}
+
 module.exports = class RappoSearch extends Plugin {
   async onload() {
     const data = (await this.loadData()) || {};
@@ -2924,12 +3228,25 @@ module.exports = class RappoSearch extends Plugin {
     this.registerMarkdownCodeBlockProcessor('연락처', (src, el, ctx) => ctx.addChild(new PeopleChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('연락대시보드', (src, el, ctx) => ctx.addChild(new ContactDashChild(this, el)));
     this.addCommand({ id: 'open', name: 'Rappo 대화·통화 검색', callback: () => new SearchModal(this).open() });
+    // 로컬 AI: 노트에게 묻기 · 노트 쓰기 (오른쪽 패널)
+    this.ai = new LocalAI(this);
+    this.finder = new NoteFinder(this);
+    this.registerView(AI_VIEW, (leaf) => new AIView(leaf, this));
+    const openAI = async (mode) => {
+      let leaf = this.app.workspace.getLeavesOfType(AI_VIEW)[0];
+      if (!leaf) { leaf = this.app.workspace.getRightLeaf(false); await leaf.setViewState({ type: AI_VIEW, active: true }); }
+      this.app.workspace.revealLeaf(leaf);
+      const v = leaf.view; if (mode && v && v.mode !== mode) { v.mode = mode; v.draw(); }
+    };
+    this.addRibbonIcon('sparkles', 'Rappo AI (노트에게 묻기 · 쓰기)', () => openAI());
+    this.addCommand({ id: 'ai-ask', name: 'Rappo AI 노트에게 묻기', callback: () => openAI('ask') });
+    this.addCommand({ id: 'ai-write', name: 'Rappo AI 노트 쓰기', callback: () => openAI('write') });
     this.addRibbonIcon('message-circle', 'Rappo 대화·통화 검색', () => new SearchModal(this).open());
     // 바뀐 파일은 다음 검색 때 다시 읽는다 (mtime 비교)
     this.registerEvent(this.app.vault.on('delete', (f) => this.index.files.delete(f.path)));
     this.registerEvent(this.app.vault.on('rename', (f, old) => this.index.files.delete(old)));
   }
-  onunload() { if (this.recorder && this.recorder.on) this.recorder.stop(); }
+  onunload() { if (this.recorder && this.recorder.on) this.recorder.stop(); if (this.ai) this.ai.stop(); }
   // 다른 플러그인(PARA 대시보드 등)에서 부르는 회의 버튼: 녹음 중이면 끝내고, 아니면 새 회의
   openMeeting(target) { if (this.recorder.on) this.recorder.stop(); else new MeetingModal(this, target || null).open(); }
   async dayNotice() {
