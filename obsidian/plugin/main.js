@@ -2970,6 +2970,79 @@ class NoteFinder {
   }
 }
 
+// 대화·통화 기록에서 찾기: 질문에 사람 이름이 있으면 그 사람의 1:1 카톡·통화·단체방에서 한 말(앞뒤 맥락 포함)을 최근 순으로,
+// 질문 낱말이 들어간 메시지도 함께. 모델 문맥이 짧으니 글자 수 안에서 자른다.
+class ConvoFinder {
+  constructor(plugin) { this.plugin = plugin; }
+  people(q) {
+    const idx = this.plugin.index, out = [];
+    const ql = q.replace(/\s+/g, '');
+    for (const r of idx.rooms()) {
+      const n = String(r.name || '').trim();
+      if (!n || n === '나' || /^[\d+\-\s()]+$/.test(n) || n.includes(',')) continue;
+      const keys = [n.replace(/\s+/g, '')];
+      if (/^[가-힣]{3}$/.test(n)) keys.push(n.slice(1));
+      const k = keys.find((x) => x.length >= 2 && ql.includes(x));
+      if (k) out.push({ name: n, key: k, last: r.last });
+    }
+    // 긴 이름(더 정확한 것) 먼저, 같은 이름 조각이면 최근에 연락한 사람
+    out.sort((a, b) => b.key.length - a.key.length || b.last.localeCompare(a.last));
+    const seen = new Set();
+    return out.filter((p) => !seen.has(p.key) && seen.add(p.key)).slice(0, 2);
+  }
+  async gather(q, terms, { all = false, budget = 4800 } = {}) {
+    const idx = this.plugin.index;
+    await idx.ensure();
+    const people = this.people(q);
+    if (!people.length && !all) return null;
+    const names = new Set(people.map((p) => p.name)), keys = people.map((p) => p.key);
+    // 대화는 말끝이 다양하니 3글자 넘는 낱말은 앞 2글자로도 (다쳤다고 → 다쳤)
+    const words = [...new Set(terms.flatMap((t) => (/^[가-힣]{3,}$/.test(t) ? [t, t.slice(0, 2)] : [t])))]
+      .filter((t) => t.length >= 2 && !STOP_WORDS.has(t) && !['무슨', '있었', '어디', '최근', '요즘'].includes(t) && !keys.some((k) => t.includes(k) || k.includes(t)));
+    const pick = new Map();   // 'path|i' → {m, room, kind, w}
+    const add = (c, i, w) => {
+      const m = c.msgs[i]; if (!m) return;
+      const id = c.file.path + '|' + i, o = pick.get(id);
+      if (!o || o.w < w) pick.set(id, { m, room: c.room, kind: c.kind, file: c.file, w, k: `${m.date} ${m.time} ${String(i).padStart(5, '0')}` });
+    };
+    for (const c of idx.files.values()) {
+      const mine = names.has(c.room);              // 그 사람과 1:1 카톡·통화
+      for (let i = 0; i < c.msgs.length; i++) {
+        const m = c.msgs[i];
+        const byP = names.has(m.who) || (c.kind === '통화' && mine);
+        const about = keys.some((k) => m.text.includes(k));
+        const hitW = words.some((w) => m.lower.includes(w));
+        if (people.length) {
+          if (mine) add(c, i, hitW ? 3 : 1);
+          else if (c.kind === '단체' && (byP || about)) {
+            add(c, i, hitW ? 3 : 2);
+            for (const d of [-2, -1, 1, 2]) add(c, i + d, 0.5);   // 단체방은 앞뒤 대화도 조금
+          }
+        } else if (hitW) { add(c, i, 2); add(c, i - 1, 0.5); add(c, i + 1, 0.5); }
+      }
+    }
+    if (!pick.size) return { text: '', rooms: [], people, n: 0 };
+    // 질문 낱말이 든 줄은 오래돼도 넣고, 나머지는 최근 것부터 글자 수 안에서
+    const all2 = [...pick.values()].sort((a, b) => b.k.localeCompare(a.k));
+    const line = (o) => `${o.m.time} ${o.m.who}: ${o.m.text.replace(/<br>/g, ' ').replace(/\s+/g, ' ').slice(0, 220)}`;
+    const keep = [];
+    let size = 0;
+    for (const o of all2.filter((x) => x.w >= 3)) { if (size > budget * 0.45) break; keep.push(o); size += line(o).length + 1; }
+    for (const o of all2) { if (keep.includes(o)) continue; if (size > budget) break; keep.push(o); size += line(o).length + 1; }
+    keep.sort((a, b) => a.room.localeCompare(b.room, 'ko') || a.k.localeCompare(b.k));
+    let text = '', head = '';
+    const rooms = new Map();
+    for (const o of keep) {
+      const h = `[${o.kind === '단체' ? '단체방' : o.kind === '통화' ? '통화' : '카톡'}: ${o.room}] ${o.m.date}`;
+      if (h !== head) { text += `\n${h}\n`; head = h; }
+      text += line(o) + '\n';
+      const r = rooms.get(o.room);
+      if (!r || r.file.stat.mtime < o.file.stat.mtime) rooms.set(o.room, { room: o.room, kind: o.kind, file: o.file });
+    }
+    return { text: text.trim(), rooms: [...rooms.values()], people, n: keep.length };
+  }
+}
+
 class AIView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf); this.plugin = plugin; this.mode = 'ask'; this.logs = false; this.useNote = false; this.useVault = true; this.busy = null;
@@ -3063,16 +3136,24 @@ class AIView extends ItemView {
         } catch (e) { if (e.name === 'AbortError') throw e; }
         terms = aiTerms(q, kw);
         st.setText('노트 찾는 중…');
-        hits = await F.find(terms, { logs: mode === 'ask' && this.logs, limit: mode === 'ask' ? 6 : 4 });
+        hits = await F.find(terms, { logs: false, limit: mode === 'ask' ? 6 : 4 });
       }
       const src = hits.map((h, i) => `[노트 ${i + 1}] [[${h.f.basename}]] (${h.f.parent ? h.f.parent.path : ''})\n${F.snippet(h.f, terms, mode === 'ask' ? 1100 : 900)}`).join('\n\n');
       const cur = mode === 'write' && this.useNote && this.lastMd && this.lastMd.file ? this.lastMd.file : null;
       const curText = cur ? (await this.app.vault.cachedRead(cur)).replace(/^---\n[\s\S]*?\n---\n/, '').slice(0, 6000) : '';
-      if (mode === 'ask' && !hits.length) { st.remove(); ans.setText('관련된 노트를 찾지 못했어요. 다른 낱말로 물어봐 주세요.' + (this.logs ? '' : ' (대화·통화 기록까지 찾으려면 아래 💬 를 켜 주세요)')); return; }
-      st.setText(mode === 'ask' ? `노트 ${hits.length}개를 읽고 답하는 중…` : '쓰는 중…');
+      // 대화·통화 기록: 질문에 사람이 나오면 늘, 💬 를 켜 두면 질문 낱말로도
+      let convo = null;
+      if (mode === 'ask') {
+        st.setText('대화 기록 찾는 중…');
+        try { convo = await P.convo.gather(q, terms, { all: this.logs || /대화|카톡|톡방|단톡|통화|얘기|이야기|말했|했다고|그랬|라고 했/.test(q) }); } catch (e) { console.warn('Rappo AI: 대화 기록', e); }
+        if (convo && !convo.n) convo = null;
+      }
+      if (mode === 'ask' && !hits.length && !convo) { st.remove(); ans.setText('관련된 노트나 대화를 찾지 못했어요. 다른 낱말로 물어봐 주세요.' + (this.logs ? '' : ' (대화·통화 기록까지 찾으려면 아래 💬 를 켜 주세요)')); return; }
+      st.setText(mode === 'ask' ? `노트 ${hits.length}개${convo ? ` · 대화 ${convo.n}줄` : ''}을 읽고 답하는 중…` : '쓰는 중…');
+      const csrc = convo ? `\n[대화·통화 기록 — '나'는 사용자 본인${convo.people.length ? `, 질문 속 사람: ${convo.people.map((p) => p.name).join(', ')}` : ''}. 단체방 이름과 날짜를 함께 봐]\n${convo.text}\n` : '';
       const day = today();
       const prompt = mode === 'ask'
-        ? `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 근거로만 답하는 비서야.\n규칙: 아래 노트 발췌에 있는 내용으로만 한국어로 짧고 분명하게 답해. 숫자와 단위는 붙여 써(12월, 3시). 발췌에 없으면 "노트에서 찾지 못했어요"라고 해. 추측하거나 지어내지 마. 근거가 된 노트는 문장 끝에 [[노트 이름]]으로 붙여.\n\n${src}\n\n질문: ${q}`
+        ? `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 근거로만 답하는 비서야.\n규칙: 아래 노트 발췌와 대화 기록에 있는 내용으로만 한국어로 짧고 분명하게 답해. 숫자와 단위는 붙여 써(12월, 3시). 대화를 물으면 최근 것부터 날짜와 함께(어느 방에서였는지도) 정리해. 메시지 수 같은 통계는 말하지 마. 없으면 "노트에서 찾지 못했어요"라고 해. 추측하거나 지어내지 마. 근거가 된 노트는 문장 끝에 [[노트 이름]]으로 붙여.\n\n${src}${csrc}\n질문: ${q}`
         : `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 쓰는 비서야.\n요청대로 새 마크다운 노트를 써. 첫 줄은 '# 제목'. 머리말이나 설명 없이 노트 내용만. 소제목(##)·목록·체크박스(- [ ])를 알맞게 써. 숫자와 단위는 붙여 써(12월, 3시).\n` +
           `참고 노트는 그대로 베끼지 말고 요청에 맞게 새로 구성해. 참고 노트의 체크 상태([ ]/[x])·날짜·숫자는 바꾸지 마. 요청과 관계없는 참고 노트는 쓰지 마.\n` +
           (curText ? `\n[지금 열린 노트: ${cur.basename}]\n${curText}\n` : '') +
@@ -3093,10 +3174,17 @@ class AIView extends ItemView {
       if (hits.length) {
         const low = out.toLowerCase();
         const used = hits.filter((h) => low.includes('[[' + h.f.basename.toLowerCase()));
-        const show = used.length ? used : mode === 'ask' ? hits.slice(0, 1) : hits;
+        const show = used.length ? used : mode === 'ask' ? (convo ? [] : hits.slice(0, 1)) : hits;
+        if (show.length) {
         const s = el.createDiv({ cls: 'rai-src' });
         s.createSpan({ cls: 'rai-muted', text: mode === 'ask' ? '근거 노트 ' : '참고한 노트 ' });
         for (const h of show) { const a = s.createEl('a', { cls: 'rai-src-link', text: h.f.basename }); a.onclick = (e) => this.app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(h.f); }
+        }
+      }
+      if (convo && convo.rooms.length) {
+        const s = el.createDiv({ cls: 'rai-src' });
+        s.createSpan({ cls: 'rai-muted', text: `💬 대화 ${convo.n}줄 ` });
+        for (const r of convo.rooms.slice(0, 6)) { const a = s.createEl('a', { cls: 'rai-src-link is-chat', text: (r.kind === '단체' ? '👥 ' : r.kind === '통화' ? '📞 ' : '') + r.room }); a.onclick = (e) => this.app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(r.file); }
       }
       const acts = el.createDiv({ cls: 'rai-acts' });
       const btn = (t, fn, cta) => { const b = acts.createEl('button', { cls: cta ? 'mod-cta' : '', text: t }); b.onclick = fn; };
@@ -3246,6 +3334,7 @@ module.exports = class RappoSearch extends Plugin {
     // 로컬 AI: 노트에게 묻기 · 노트 쓰기 (오른쪽 패널)
     this.ai = new LocalAI(this);
     this.finder = new NoteFinder(this);
+    this.convo = new ConvoFinder(this);
     this.registerView(AI_VIEW, (leaf) => new AIView(leaf, this));
     const openAI = this.openAI = async (mode) => {
       let leaf = this.app.workspace.getLeavesOfType(AI_VIEW)[0];
