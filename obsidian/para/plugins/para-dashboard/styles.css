@@ -235,3 +235,19 @@ body.pd-drag-on .pd-board-col.pd-dropzone, body.pd-drag-on .pd-card.pd-dropzone,
 .pd-drop-ok { outline: 2px solid var(--interactive-accent) !important; outline-offset: -2px; background-color: hsla(var(--interactive-accent-hsl), .08) !important; }
 body.pd-drag-on .pd-section.pd-dropzone { outline: 1px dashed var(--background-modifier-border-hover); outline-offset: 2px; }
 .pd-section.pd-drop-ok { outline-offset: 2px; }
+
+/* v3: 노트 위 띠 — 항목마다 이름표 + 값, 넓으면 한 줄·좁으면 자연스럽게 줄바꿈 */
+.pd-notebar { gap: 6px 14px; padding-top: 8px; padding-bottom: 8px; align-items: center; }
+.pd-nb-type { padding: 2px 8px; border-radius: 6px; background: var(--background-modifier-hover); color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: 0; }
+.pd-nb-project { background: rgba(59,130,246,.14); color: var(--pd-doing); }
+.pd-nb-area { background: rgba(139,92,246,.14); color: #8b5cf6; }
+.pd-nb-fields { gap: 4px 14px !important; align-items: center; }
+.pd-nb-field { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.pd-nb-key { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.pd-nb-field + .pd-nb-field { padding-left: 14px; border-left: 1px solid var(--background-modifier-border); }
+.pd-notebar .pd-link-chip { height: 22px; font-size: 12.5px; font-weight: 600; padding: 0 8px; background: var(--background-primary); border: 1px solid var(--background-modifier-border); }
+.pd-notebar .pd-link-chip.is-empty { font-weight: 400; background: transparent; border-style: dashed; }
+.pd-link-chip-area:not(.is-empty) { color: #8b5cf6; }
+.pd-link-chip-with:not(.is-empty) { color: #10b981; }
+.pd-notebar .pd-row-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.pd-nb-field:has(.pd-link-chip.is-empty) .pd-nb-key { display: none; }   /* 비어 있으면 "+ 영역"처럼 한 번만 */

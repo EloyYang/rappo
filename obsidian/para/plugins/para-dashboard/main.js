@@ -424,12 +424,15 @@ module.exports = class ParaDashboard extends Plugin {
     if (!bar) { bar = createDiv({ cls: 'pd-notebar pd-root' }); view.contentEl.prepend(bar); }
     bar.empty();
     const names = (v) => asList(v).map(linkName).filter(Boolean).map((name) => ({ name }));
-    const it = { file: f, name: f.basename, path: f.path, type, status: str(fm.status), start: str(fm.start), end: str(fm.end), areas: names(fm.area), projects: names(fm.project) };
-    bar.createSpan({ cls: 'pd-notebar-label', text: TYPE_LABEL[type] });
-    const lc = bar.createDiv({ cls: 'pd-link-chips' });
-    if (['note', 'project', 'resource'].includes(type) || it.areas.length) this.linkChip(lc, it, 'area');
-    if (type === 'note') this.linkChip(lc, it, 'project');
-    if (type === 'note' || type === 'project') this.periodChip(lc, it);
+    const it = { file: f, name: f.basename, path: f.path, type, status: str(fm.status), start: str(fm.start), end: str(fm.end), areas: names(fm.area), projects: names(fm.project), with: names(fm.with) };
+    // 항목마다 작은 이름표 + 값 (영역 · 프로젝트 · 누구와 · 기간), 오른쪽에 상태와 편집
+    bar.createSpan({ cls: 'pd-notebar-label pd-nb-type pd-nb-' + type, text: TYPE_LABEL[type] });
+    const lc = bar.createDiv({ cls: 'pd-link-chips pd-nb-fields' });
+    const field = (icon, label) => { const g = lc.createDiv({ cls: 'pd-nb-field' }); g.createSpan({ cls: 'pd-nb-key', text: `${icon} ${label}` }); return g; };
+    if (['note', 'project', 'resource'].includes(type) || it.areas.length) this.linkChip(field('🗂', '영역'), it, 'area');
+    if (type === 'note') this.linkChip(field('📁', '프로젝트'), it, 'project');
+    if (type === 'note' || type === 'project' || it.with.length) this.withChip(field('👤', '누구와'), it);
+    if (type === 'note' || type === 'project') this.periodChip(field('📅', '기간'), it);
     const r = bar.createDiv({ cls: 'pd-row-right' });
     const opts = STATUS_BY_TYPE[type] || [];
     if (opts.length > 1 || (it.status && !opts.includes(it.status))) this.statusSelect(r, it, opts);
@@ -738,6 +741,35 @@ module.exports = class ParaDashboard extends Plugin {
     const empty = !ok(it.start) && !ok(it.end);
     const b = parent.createEl('button', { text, cls: 'pd-link-chip pd-link-chip-period' + (empty ? ' is-empty' : ''), attr: { 'aria-label': '기간 지정 (시작일~마감일)' } });
     b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); new PeriodModal(this, it).open(); });
+    return b;
+  }
+  // 누구와 (with): 연락처 노트에서 고르기 · 다시 고르면 빼기 · 없으면 이름 입력
+  withChip(parent, it) {
+    const cur = it.with || [];
+    const b = parent.createEl('button', {
+      cls: 'pd-link-chip pd-link-chip-with' + (cur.length ? '' : ' is-empty'),
+      text: cur.length ? cur.map((x) => x.name).slice(0, 2).join(', ') + (cur.length > 2 ? ` +${cur.length - 2}` : '') : '+ 누구와',
+      attr: { 'aria-label': `함께 하는 사람${cur.length ? ': ' + cur.map((x) => x.name).join(', ') : ''}` },
+    });
+    b.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const now = cur.map((x) => x.name);
+      const people = new Map();
+      for (const f of this.app.vault.getMarkdownFiles()) {
+        if (!/\/연락처\//.test('/' + f.path)) continue;
+        const fm = this.app.metadataCache.getFileCache(f)?.frontmatter || {};
+        const nm = str(fm.name);
+        people.set(f.basename, { name: f.basename, label: `${now.includes(f.basename) ? '✓ ' : ''}${f.basename}${nm && nm !== '정보 없음' && nm !== f.basename ? '  · ' + nm : ''}` });
+      }
+      const items = [...people.values()].sort((a, b2) => (now.includes(b2.name) - now.includes(a.name)) || a.name.localeCompare(b2.name, 'ko'));
+      new PickModal(this.app, items, `${it.name} — 누구와 (✓ 다시 누르면 빠져요 · 없으면 이름 입력)`, async (pick) => {
+        await this.app.fileManager.processFrontMatter(it.file, (fm) => {
+          const list = asList(fm.with).map(linkName).filter(Boolean);
+          const next = list.includes(pick.name) ? list.filter((n) => n !== pick.name) : [...list, pick.name];
+          if (next.length) fm.with = next.map((n) => `[[${n}]]`); else delete fm.with;
+        });
+      }, { kind: 'person', kindLabel: '사람', onRename: () => new Notice('사람 이름은 연락처 노트에서 바꿔 주세요'), onDelete: () => new Notice('연락처는 여기서 지우지 않아요') }).open();
+    });
     return b;
   }
   // 카드 위에서 area / project 바로 지정
