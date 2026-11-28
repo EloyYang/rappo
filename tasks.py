@@ -311,6 +311,11 @@ def _contact_link(root: Path, who: str) -> str:
     return who
 
 
+def _wl(root: Path, who: str) -> str:
+    l = _contact_link(root, who)
+    return l if l.startswith("[[") else f"[[{who}]]"
+
+
 def link_notes(root: Path) -> int:
     p = note_path(root)
     vault = _vault_of(root)
@@ -336,7 +341,8 @@ def link_notes(root: Path) -> int:
         names.add(name)
         (vault / "0. Inbox" / f"{name}.md").write_text(
             "---\ntype: note\nstatus: 시작 전\narea: []\nproject: []\n"
-            f"end: {due}\ncreated: {datetime.now():%Y-%m-%d}\ntags: [할일]\n---\n"
+            + (f'with:\n  - "{_wl(root, who)}"\n' if who else "")
+            + f"end: {due}\ncreated: {datetime.now():%Y-%m-%d}\ntags: [할일]\n---\n"
             f"## 할 일\n- [ ] {text}\n\n"
             + (f"- 누구와: {_contact_link(root, who)}\n" if who else "") + (f"- 무슨 일: {ctx}\n" if ctx else "")
             + (f"- 출처: {link}\n" if link else "") + "- 할 일 목록: [[할 일]]\n\n## 메모\n\n", encoding="utf-8")

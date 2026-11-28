@@ -122,6 +122,7 @@ class PropModal extends Modal {
       status: str(fm.status),
       area: asList(fm.area).map(linkName).filter(Boolean),
       project: asList(fm.project).map(linkName).filter(Boolean),
+      with: asList(fm.with).map(linkName).filter(Boolean),
       end: str(fm.end),
       start: str(fm.start),
     };
@@ -202,6 +203,30 @@ class PropModal extends Modal {
         s.area.length ? `[${s.area.join(', ')}] 영역의 프로젝트만 보여요` : 'area를 먼저 고르면 그 영역의 프로젝트만 보여요');
     }
 
+    // 누구와 (with): 함께 하는 사람 — Rappo 연락처와 이어져 그 사람 연락처의 라포 칸·할 일에 보여요
+    if (s.type === 'note' || s.type === 'project' || s.with.length) {
+      const people = () => {
+        const out = new Map();
+        for (const f of this.app.vault.getMarkdownFiles()) {
+          if (!/\/연락처\//.test('/' + f.path)) continue;
+          const fm = this.app.metadataCache.getFileCache(f)?.frontmatter || {};
+          const nm = str(fm.name);
+          out.set(f.basename, { name: f.basename, label: nm && nm !== '정보 없음' && nm !== f.basename ? `${f.basename}  · ${nm}` : f.basename });
+        }
+        return [...out.values()].filter((x) => !s.with.includes(x.name)).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+      };
+      const v = row('누구와 (with)');
+      const box = v.createDiv({ cls: 'pd-chips' });
+      for (const name of s.with) {
+        const chip = box.createSpan({ cls: 'pd-chip pd-chip-edit', text: name });
+        const x = chip.createSpan({ text: ' ✕', cls: 'pd-chip-x' });
+        x.onclick = () => { s.with = s.with.filter((n) => n !== name); this.paint(); };
+      }
+      const add = box.createEl('button', { text: '+ 추가', cls: 'pd-mini' });
+      add.onclick = () => new PickModal(this.app, people(), '연락처 검색 (없으면 이름을 입력해서 추가)', (it) => { s.with.push(it.name); this.paint(); },
+        { kind: 'person', kindLabel: '사람', onRename: () => new Notice('사람 이름은 연락처 노트에서 바꿔 주세요'), onDelete: () => new Notice('연락처는 여기서 지우지 않아요') }).open();
+    }
+
     // end
     const sv2 = row('start (시작일)');
     const si = sv2.createEl('input', { type: 'date', cls: 'pd-date-input' });
@@ -232,6 +257,7 @@ class PropModal extends Modal {
       if (s.status) fm.status = s.status; else delete fm.status;
       fm.area = s.area.map((n) => `[[${n}]]`);
       if (s.type === 'note' || s.project.length || fm.project !== undefined) fm.project = s.project.map((n) => `[[${n}]]`);
+      if (s.with.length) fm.with = s.with.map((n) => `[[${n}]]`); else if (fm.with !== undefined) delete fm.with;
       if (s.end) fm.end = s.end; else if (fm.end !== undefined) fm.end = null;
       if (s.start) fm.start = s.start; else if (fm.start !== undefined) delete fm.start;
     });

@@ -1,7 +1,7 @@
 {
   "id": "rappo",
   "name": "Rappo 대화·통화 검색",
-  "version": "3.13.0",
+  "version": "3.14.0",
   "minAppVersion": "1.9.0",
   "description": "Rappo(라포)가 만든 카톡·통화 노트를 한 번에 검색하고, 최근 연락을 모아 본다",
   "author": "Rappo",

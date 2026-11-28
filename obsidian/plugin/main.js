@@ -742,12 +742,11 @@ class Tasks {
       const end = fm.end ? String(fm.end).slice(0, 10) : '';
       if (/^\d{4}-\d{2}-\d{2}$/.test(end) && end !== t.due) ch.due = end;
       else if (!end && t.due && 'end' in fm) ch.due = '';
-      try {
-        const body = await this.app.vault.cachedRead(nf);
-        const m = /##\s*할 일\s*\n-\s+\[.\]\s+(.+)/.exec(body);
-        const txt = m && m[1].trim();
-        if (txt && txt !== t.text) ch.text = txt;
-      } catch (e) { /* 노트 읽기 실패 */ }
+      // 할 일 문장 = 노트 제목 (캘린더 일정 제목도 이걸로)
+      if (nf.basename && nf.basename !== t.text) ch.text = nf.basename;
+      // 누구와 = 노트 속성 with (연락처 링크)
+      const withs = [].concat(fm.with || []).map((x) => String(x).replace(/^\[\[|\]\]$/g, '').split('|').pop()).filter(Boolean);
+      if (withs.length && withs.join(', ') !== t.who) ch.who = withs.join(', ');
       if (Object.keys(ch).length) { Object.assign(t, ch); await this.update(t, {}); this.changed = true; }
     }
     return this.cache;
@@ -786,12 +785,13 @@ class Tasks {
     const base = safeName(t.text) || '할 일';
     let name = base, n = 2;
     while (this.app.metadataCache.getFirstLinkpathDest(name, '')) name = `${base} (${n++})`;
+    const wl = t.who ? this.contactLink(t.who) : '';
     await this.app.vault.create(`0. Inbox/${name}.md`, `---
 type: note
 status: 시작 전
 area: []
 project: []
-end: ${t.due || ''}
+${wl ? `with:\n  - "${wl.startsWith('[[') ? wl : `[[${wl}]]`}"\n` : ''}end: ${t.due || ''}
 created: ${today()}
 tags: [할일]
 ---
@@ -2126,7 +2126,7 @@ class PersonView {
     await P.index.ensure();
     const allTasks = await P.tasks.load();
     const { dated } = await P.days.load();
-    const tasks = allTasks.filter((t) => alias.includes(t.who));
+    const tasks = allTasks.filter((t) => (t.who || '').split(/,\s*/).some((w) => alias.includes(w)));
     const { ev } = await P.days.upcoming();
     status.remove();
     // 같은 사람의 다른 이름: 통화는 '홍길동', 카톡 1:1 방은 '길동'처럼 성을 뺀 이름인 경우
