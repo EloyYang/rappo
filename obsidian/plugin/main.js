@@ -2823,7 +2823,7 @@ class DaysChild extends MarkdownRenderChild {
 const AI_VIEW = 'rappo-ai';
 const AI_MODEL = 'mlx-community/Qwen3.5-4B-MLX-4bit';
 const AI_URL = 'http://127.0.0.1:8765';
-const STOP_WORDS = new Set(['노트', '내용', '관련', '정리', '알려줘', '알려', '줘', '뭐야', '뭐', '어떻게', '있어', '있나', '찾아줘', '찾아', '대해', '대한', '무엇', '언제', '어디', '누구', '해줘', '써줘', '만들어줘', '작성', '작성해줘']);
+const STOP_WORDS = new Set(['노트', '내용', '관련', '정리', '알려줘', '알려', '줘', '뭐야', '뭐', '어떻게', '있어', '있나', '찾아줘', '찾아', '대해', '대한', '무엇', '언제', '어디', '누구', '해줘', '써줘', '만들어줘', '작성', '작성해줘', '최근', '요즘', '지난', '오늘', '어제', '대화', '통화', '얘기', '이야기', '요약', '요약해줘', '내용을', '했던', '했지', '나눈']);
 
 class LocalAI {
   constructor(plugin) { this.plugin = plugin; this.proc = null; this.idle = null; }
@@ -2888,7 +2888,7 @@ class LocalAI {
     }
     this.touch();
     // 작은 모델이 '12 월', '3 시'처럼 띄어 쓰는 버릇 고치기
-    return out.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/(\d) (월|일|시|분|초|팀|명|개|원|만원|천원|년|주|번|살|층|호)(?![가-힣])/g, '$1$2').replace(/(\d) (월|일|시|분|년|주|번|명|개|원)(?=[\s.,)~(]|$)/gm, '$1$2').trim();
+    return out.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/(\d) (월|일|시|분|초|팀|명|개|원|만원|천원|년|주|번|살|층|호)(?![가-힣])/g, '$1$2').replace(/(\d) (월|일|시|분|초|년)(?=(부터|까지|에|은|는|이|의|간|동안|째|쯤|경|로|과|와|도|만)(?![가-힣]{2})|[가-힣]?[\s.,)~(]|$)/gm, '$1$2').trim();
   }
 }
 
@@ -2918,28 +2918,39 @@ class NoteFinder {
   }
   async find(terms, { logs = false, limit = 6 } = {}) {
     if (!terms.length) return [];
-    const res = [];
-    const now = Date.now();
+    // 1) 노트마다 핵심어가 몇 번 나오는지
+    const rows = [], df = terms.map(() => 0);
     for (const f of this.app.vault.getMarkdownFiles()) {
       if (this.skip(f.path, logs)) continue;
       await this.text(f);
       const low = this.cache.get(f.path).l, title = f.basename.toLowerCase();
-      let score = 0, hit = 0;
-      for (const t of terms) {
+      const cnt = terms.map((t, k) => {
         let n = 0, i = -1;
         while ((i = low.indexOf(t, i + 1)) >= 0 && n < 12) n++;
         const inT = title.includes(t);
-        if (n || inT) hit++;
-        score += (inT ? 8 : 0) + Math.min(n, 12) * (t.length >= 3 ? 1.5 : 1);
-      }
-      if (!hit) continue;
-      score += (hit - 1) * 6 + Math.max(0, 3 - (now - f.stat.mtime) / (86400000 * 60));
-      res.push({ f, score, hit });
+        if (n || inT) df[k]++;
+        return { n, inT };
+      });
+      if (cnt.some((c) => c.n || c.inT)) rows.push({ f, cnt });
     }
-    res.sort((a, b) => b.hit - a.hit || b.score - a.score);
-    // 맨 위와 거리가 먼 노트는 빼서 모델이 헷갈리지 않게
-    const top = res[0];
-    return res.filter((r) => r === top || (r.hit >= Math.max(1, top.hit - 1) && r.score >= top.score * 0.35)).slice(0, limit);
+    // 2) 여러 노트에 흔한 말(대화·요약 같은)은 가볍게, 드문 말(사람 이름 같은)은 무겁게
+    const N = Math.max(1, rows.length + 1);
+    const idf = df.map((d) => Math.log(1 + N / (1 + d)));
+    const now = Date.now();
+    const res = rows.map(({ f, cnt }) => {
+      let score = 0, hit = 0;
+      cnt.forEach((c, k) => {
+        if (!c.n && !c.inT) return;
+        hit++;
+        score += ((c.inT ? 6 : 0) + Math.log2(1 + c.n) * 2) * idf[k];
+      });
+      score *= 1 + Math.max(0, 0.3 - (now - f.stat.mtime) / (86400000 * 200));
+      return { f, score, hit };
+    }).sort((a, b) => b.score - a.score);
+    if (!res.length) return [];
+    // 3) 맨 위와 거리가 먼 노트는 빼서 모델이 헷갈리지 않게
+    const top = res[0].score;
+    return res.filter((r, i) => i === 0 || r.score >= top * 0.45).slice(0, limit);
   }
   // 노트에서 핵심어 둘레만 잘라 (모델 문맥이 짧으니)
   snippet(f, terms, size = 1100) {
@@ -3057,12 +3068,6 @@ class AIView extends ItemView {
       const src = hits.map((h, i) => `[노트 ${i + 1}] [[${h.f.basename}]] (${h.f.parent ? h.f.parent.path : ''})\n${F.snippet(h.f, terms, mode === 'ask' ? 1100 : 900)}`).join('\n\n');
       const cur = mode === 'write' && this.useNote && this.lastMd && this.lastMd.file ? this.lastMd.file : null;
       const curText = cur ? (await this.app.vault.cachedRead(cur)).replace(/^---\n[\s\S]*?\n---\n/, '').slice(0, 6000) : '';
-      if (hits.length) {
-        const s = el.createDiv({ cls: 'rai-src' });
-        s.createSpan({ cls: 'rai-muted', text: mode === 'ask' ? '근거 노트 ' : '참고한 노트 ' });
-        for (const h of hits) { const a = s.createEl('a', { cls: 'rai-src-link', text: h.f.basename }); a.onclick = (e) => this.app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(h.f); }
-        el.appendChild(s);
-      }
       if (mode === 'ask' && !hits.length) { st.remove(); ans.setText('관련된 노트를 찾지 못했어요. 다른 낱말로 물어봐 주세요.' + (this.logs ? '' : ' (대화·통화 기록까지 찾으려면 아래 💬 를 켜 주세요)')); return; }
       st.setText(mode === 'ask' ? `노트 ${hits.length}개를 읽고 답하는 중…` : '쓰는 중…');
       const day = today();
@@ -3085,6 +3090,14 @@ class AIView extends ItemView {
       ans.querySelectorAll('a.internal-link').forEach((a) => {
         a.onclick = (e) => { e.preventDefault(); this.app.workspace.openLinkText(a.getAttr('data-href') || a.getText(), '', e.metaKey || e.ctrlKey); };
       });
+      if (hits.length) {
+        const low = out.toLowerCase();
+        const used = hits.filter((h) => low.includes('[[' + h.f.basename.toLowerCase()));
+        const show = used.length ? used : mode === 'ask' ? hits.slice(0, 1) : hits;
+        const s = el.createDiv({ cls: 'rai-src' });
+        s.createSpan({ cls: 'rai-muted', text: mode === 'ask' ? '근거 노트 ' : '참고한 노트 ' });
+        for (const h of show) { const a = s.createEl('a', { cls: 'rai-src-link', text: h.f.basename }); a.onclick = (e) => this.app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(h.f); }
+      }
       const acts = el.createDiv({ cls: 'rai-acts' });
       const btn = (t, fn, cta) => { const b = acts.createEl('button', { cls: cta ? 'mod-cta' : '', text: t }); b.onclick = fn; };
       if (mode === 'write') {
