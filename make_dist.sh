@@ -7,7 +7,7 @@ OUT="$HERE/dist"
 TMP="$(mktemp -d)"
 mkdir -p "$OUT" "$TMP/Rappo"
 rsync -a \
-  --exclude config.sh --exclude state/ --exclude dist/ --exclude __pycache__/ --exclude .git/ --exclude .claude/ \
+  --exclude config.sh --exclude state/ --exclude dist/ --exclude __pycache__/ --exclude .git --exclude .claude/ \
   --exclude .DS_Store --exclude '*.pyc' --exclude '._*' \
   "$HERE/" "$TMP/Rappo/"
 # 혹시 남은 개인 경로가 있으면 알림
