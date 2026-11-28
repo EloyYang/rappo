@@ -3007,7 +3007,7 @@ class AIView extends ItemView {
       : '예) 다음 주 워크숍 준비 체크리스트 노트 만들어줘\n예) 지금 노트를 3줄로 요약해줘' } });
     this.ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); } };
     const row = box.createDiv({ cls: 'rai-send-row' });
-    row.createSpan({ cls: 'rai-hint', text: '내 맥 안에서만 돌아가요 · 노트는 밖으로 나가지 않아요' });
+    row.createSpan({ cls: 'rai-hint', text: '🔒 내 맥 안에서만 처리돼요' });
     this.sendBtn = row.createEl('button', { cls: 'mod-cta rai-send', text: this.busy ? '■ 멈추기' : '보내기' });
     this.sendBtn.onclick = () => (this.busy ? this.busy.abort() : this.send());
     setTimeout(() => this.ta.focus(), 50);

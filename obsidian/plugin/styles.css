@@ -378,3 +378,6 @@ div.ks-section-head { cursor: default; }
 .rai-send-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rai-hint { font-size: 10.5px; color: var(--text-faint); }
 .rai-send { flex: none; }
+/* v28.1 Rappo AI: 아래 상태 표시줄(백링크·글자 수)에 입력칸이 가리지 않게 */
+.rai-input { padding-bottom: calc(var(--status-bar-height, 28px) + 14px); }
+.rai-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
