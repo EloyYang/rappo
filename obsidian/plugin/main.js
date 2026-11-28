@@ -1593,8 +1593,18 @@ class Days {
       for (const t of this.plugin.tasks.cache || []) {
         const fromTalk = /통화|카톡|회의/.test(t.link || '');
         if (!(ct[t.id] || (autoT && fromTalk)) || !t.due || t.status === '-') continue;
+        // 캘린더 메모 = 할 일 노트 내용 (노트를 고치면 메모도 바뀜)
+        let body = '';
+        const nf = this.plugin.tasks.noteFile(t);
+        if (nf) {
+          try {
+            body = (await this.app.vault.cachedRead(nf)).replace(/^---\n[\s\S]*?\n---\n?/, '')
+              .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2').replace(/\[\[([^\]]+)\]\]/g, '$1')
+              .replace(/^- 할 일 목록: 할 일\s*$/m, '').replace(/\n{3,}/g, '\n\n').trim().slice(0, 2000);
+          } catch (e) { body = ''; }
+        }
         events.push({ id: `task:${t.id}`, update: true, title: `✅ ${t.text}`, date: t.due, time: t.time || '',
-          notes: [t.who && `누구와: ${t.who}`, t.ctx && `무슨 일: ${t.ctx}`, 'Rappo 할 일'].filter(Boolean).join('\n') });
+          notes: body || [t.who && `누구와: ${t.who}`, t.ctx && `무슨 일: ${t.ctx}`].filter(Boolean).join('\n') });
       }
       // 캘린더에서 지우기는 사용자가 확인한 것만 (지운 할 일 → '캘린더에서도 지우기'를 눌렀을 때)
       const remove = Object.keys(this.plugin.data.calRemove || {});

@@ -572,13 +572,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for e in list {
             guard let id = e["id"] as? String, let title = e["title"] as? String, let ds = e["date"] as? String else { continue }
             let time = e["time"] as? String ?? ""
-            let sig = "\(title)|\(ds)|\(time)"
+            let note = (e["notes"] as? String ?? "") + "\n\n— Rappo"
+            // 서명(바뀐 게 있는지 비교): 앱을 다시 켜도 같은 값이 나오게 직접 계산
+            let sig = "\(title)|\(ds)|\(time)|\(note.utf8.reduce(UInt64(5381)) { ($0 &* 33) &+ UInt64($1) })"
             f.dateFormat = time.isEmpty ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm"
             guard let start = f.date(from: time.isEmpty ? ds : "\(ds) \(time)") else { continue }
             // 이미 넣은 일정: 할 일(노트)이 바뀌었으면 캘린더 일정도 고친다 (지우지는 않음)
             if let eid = added[id] {
                 if (e["update"] as? Bool) == true, sigs[id] != nil, sigs[id] != sig, let ev = events.event(withIdentifier: eid) {
                     ev.title = title
+                    ev.notes = note
                     if time.isEmpty { ev.isAllDay = true; ev.startDate = start; ev.endDate = start }
                     else { ev.isAllDay = false; ev.startDate = start; ev.endDate = start.addingTimeInterval(3600) }
                     do { try events.save(ev, span: .thisEvent, commit: false); n += 1 } catch { NSLog("Rappo 일정 고치기 실패: \(error)") }
