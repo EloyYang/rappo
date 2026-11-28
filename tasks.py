@@ -207,9 +207,15 @@ def vague_due(s: str, base: datetime) -> str:
     return ""
 
 
-def extract(text: str, base: datetime, partner: str, what: str) -> list[dict]:
-    """AI 후보 → 내가 할 일·확정된 것·근거가 원문에 있는 것만."""
-    res = _ask(_prompt(text[-7000:], base, partner, what)) or {}
+def extract(text: str, base: datetime, partner: str, what: str, context: str = "") -> list[dict]:
+    """AI 후보 → 내가 할 일·확정된 것·근거가 원문에 있는 것만.
+    context: 이미 정리한 앞 대화 (흐름 이해용). 근거 문장은 새 대화(text)에 있어야만 남긴다."""
+    body = text[-7000:]
+    if context:
+        body = ("[앞 대화 — 이미 정리한 부분이야. 흐름만 참고하고 여기서는 뽑지 마]\n" + context[-1500:]
+                + "\n\n[새 대화 — 할 일은 여기서만 뽑아]\n" + body)
+    full = (context + "\n" + text) if context else text
+    res = _ask(_prompt(body, base, partner, what)) or {}
     out = []
     for it in res.get("items") or []:
         if not isinstance(it, dict):
@@ -220,7 +226,7 @@ def extract(text: str, base: datetime, partner: str, what: str) -> list[dict]:
         quote = str(it.get("quote", ""))
         if PASSIVE.search(task) or not _grounded(quote, text):
             continue
-        if not _mine(quote, text) and not _confirm(task, quote, text):
+        if not _mine(quote, text) and not _confirm(task, quote, full):
             continue
         # 기간만 말했으면(다음 주 등) 그 기간의 가장 빠른 날, 아니면 모델이 계산한 날짜
         vd = vague_due(f"{_quote_line(quote, text)} {quote}", base)
@@ -464,14 +470,37 @@ def save_state(path: Path, st: dict):
 
 
 # ---------- 통화 ----------
+def call_key(note: Path) -> str:
+    """통화의 바뀌지 않는 열쇠 (번호 + 시각). 이름이 바뀌어 노트 파일 이름이 달라져도 같은 통화로 알아본다."""
+    try:
+        head = note.read_text(encoding="utf-8")[:1500]
+    except Exception:
+        return ""
+    ph = re.search(r'^phone:\s*"?([^"\n]*)"?', head, re.M)
+    dt = re.search(r'^datetime:\s*"?([^"\n]*)"?', head, re.M)
+    return f"#{ph.group(1).strip()}|{dt.group(1).strip()[:16]}" if ph and dt and dt.group(1).strip() else ""
+
+
+def call_seen(note: Path, st: dict) -> bool:
+    k = call_key(note)
+    if st["calls"].get(note.stem) or (k and st["calls"].get(k)):
+        if k:
+            st["calls"][k] = True
+        return True
+    return False
+
+
 def from_call(root: Path, note: Path, transcript: str, when: datetime, partner: str, st: dict) -> int:
-    if st["calls"].get(note.stem):
+    if call_seen(note, st):
         return 0
     n = 0
     if len(transcript) >= 30:
         items = extract(transcript, when, partner or "상대", "전화 통화 전사문(음성인식이라 오인식이 있을 수 있음)")
         n = add(root, items, partner, note.stem, f"통화 {when.month}/{when.day}")
     st["calls"][note.stem] = True
+    k = call_key(note)
+    if k:
+        st["calls"][k] = True
     return n
 
 
@@ -512,6 +541,8 @@ def redo_calls(root: Path, call_dir: Path, state_path: Path, read_fm, days: int 
             notes.append(p)
         else:
             st["calls"][p.stem] = True
+            if call_key(p):
+                st["calls"][call_key(p)] = True
     save_state(state_path, st)
     print(f"최근 {days}일 통화 {len(notes)}개에서 할 일 다시 찾기")
     total = 0
@@ -524,6 +555,7 @@ def redo_calls(root: Path, call_dir: Path, state_path: Path, read_fm, days: int 
         name = str(fm.get("name", "")).strip()
         partner = name if name and name != "정보 없음" else str(fm.get("phone", ""))
         st["calls"].pop(p.stem, None)
+        st["calls"].pop(call_key(p), None)
         n = from_call(root, p, transcript_of(p), when, partner, st)
         total += n
         save_state(state_path, st)
@@ -560,42 +592,70 @@ def _kakao_days(kdir: Path, since: str):
     return out
 
 
+def _mid(day: str, t: str, x: str) -> str:
+    """카톡 메시지 하나의 열쇠 (날짜·시각·내용). 방 이름이나 보낸 사람 이름이 바뀌어도 같은 메시지로 알아본다."""
+    return hashlib.sha1(f"{day} {t} {x}".encode()).hexdigest()[:10]
+
+
+CTX_MSGS = 8   # 새 메시지 앞에 흐름 이해용으로 붙이는 이미 본 메시지 수
+
+
 def from_kakao(root: Path, state_path: Path, limit: int = MAX_KAKAO_CHUNKS) -> int:
+    """카톡 할 일: 이미 본 메시지는 다시 뽑지 않고, 새로 쌓인 메시지에서만 할 일·약속을 찾는다.
+    (앞 메시지 몇 개는 흐름을 알 수 있게 '참고용'으로만 함께 보낸다)"""
     kdir = root / "카톡"
     if not kdir.is_dir():
         return 0
     st = load_state(state_path)
+    seen_all = st.setdefault("kseen", {})          # {날짜: [메시지 열쇠]}
     now = datetime.now()
     since = (now - timedelta(days=KAKAO_DAYS)).strftime("%Y-%m-%d")
     days = _kakao_days(kdir, since)
+    legacy = st.get("kakao", {})                   # 예전 방식(방|날짜 → 본 메시지 수)
+    for (room, day), (kind, stem, msgs) in days.items():
+        old = legacy.pop(f"{room}|{day}", None)
+        if isinstance(old, int) and old > 0:       # 예전에 본 만큼은 본 것으로
+            sd = set(seen_all.get(day, []))
+            sd.update(_mid(day, t, x) for t, _, x in msgs[:old])
+            seen_all[day] = sorted(sd)
+    st["kakao"] = {k: v for k, v in legacy.items() if k.split("|")[-1] >= since}
+
+    def mark(day, ms):
+        sd = set(seen_all.get(day, []))
+        sd.update(_mid(day, t, x) for t, _, x in ms)
+        seen_all[day] = sorted(sd)
+
     todo = []
     for (room, day), (kind, stem, msgs) in days.items():
-        key = f"{room}|{day}"
-        if st["kakao"].get(key) == len(msgs):
+        sd = set(seen_all.get(day, []))
+        new_i = [i for i, (t, _, x) in enumerate(msgs) if _mid(day, t, x) not in sd]
+        if not new_i:
             continue
+        new = [msgs[i] for i in new_i]
         # 오늘 대화는 1시간 조용해진 뒤에
-        if day == now.strftime("%Y-%m-%d") and msgs and (now - datetime.strptime(f"{day} {msgs[-1][0]}", "%Y-%m-%d %H:%M")).total_seconds() < 3600:
+        if day == now.strftime("%Y-%m-%d") and (now - datetime.strptime(f"{day} {msgs[-1][0]}", "%Y-%m-%d %H:%M")).total_seconds() < 3600:
             continue
         people = {w for _, w, _ in msgs if w != "나"}
-        if kind == "단체" and len(people) > 6:
-            st["kakao"][key] = len(msgs)
+        if (kind == "단체" and len(people) > 6) or not any(w == "나" for _, w, _ in new) \
+                or not any(TASK_KW.search(x) for _, _, x in new):
+            mark(day, new)
             continue
-        if not any(w == "나" for _, w, _ in msgs) or not any(TASK_KW.search(x) for _, _, x in msgs):
-            st["kakao"][key] = len(msgs)
-            continue
-        todo.append((day, room, kind, stem, msgs))
-    todo.sort(reverse=True)
+        ctx = [m for i, m in enumerate(msgs[: new_i[0]]) if i not in new_i][-CTX_MSGS:]
+        todo.append((day, room, kind, stem, msgs, new, ctx))
+    todo.sort(key=lambda x: (x[0], x[1]), reverse=True)
     total = 0
-    for day, room, kind, stem, msgs in todo[:limit]:
-        text = "\n".join(f"{t} {w}: {x}" for t, w, x in msgs)
+    for day, room, kind, stem, msgs, new, ctx in todo[:limit]:
+        fmt = lambda ms: "\n".join(f"{t} {w}: {x}" for t, w, x in ms)
         partner = room if kind != "단체" else f"단체방 '{room}' 사람들"
-        items = extract(text, datetime.strptime(day, "%Y-%m-%d"), partner, "카카오톡 대화")
+        items = extract(fmt(new), datetime.strptime(day, "%Y-%m-%d"), partner, "카카오톡 대화", context=fmt(ctx))
         y, m, d = day.split("-")
         n = add(root, items, room, stem, f"카톡 {int(m)}/{int(d)}")
         total += n
-        st["kakao"][f"{room}|{day}"] = len(msgs)
+        mark(day, new)
         save_state(state_path, st)
-        print(f"  할 일 · 카톡 {room} {day}: {'+' + str(n) if n else '없음'}", flush=True)
+        print(f"  할 일 · 카톡 {room} {day} 새 메시지 {len(new)}개: {'+' + str(n) if n else '없음'}", flush=True)
+    for d in [d for d in seen_all if d < since]:   # 볼 기간이 지난 날은 정리
+        del seen_all[d]
     save_state(state_path, st)
     if len(todo) > limit:
         print(f"  할 일 · 카톡 {len(todo) - limit}묶음은 다음 실행에")

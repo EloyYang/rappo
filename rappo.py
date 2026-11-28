@@ -572,7 +572,7 @@ def catch_up(a, root: Path, call_dir: Path, cdir: Path):
     st = tasks.load_state(TASK_STATE)
     cut = datetime.now() - timedelta(days=tasks.KAKAO_DAYS)
     for p in sorted(call_dir.glob("*.md")):
-        if st["calls"].get(p.stem):
+        if tasks.call_seen(p, st):   # 이름이 바뀌어 파일 이름이 달라진 통화도 이미 본 것으로
             continue
         fm = read_fm(p)
         try:
@@ -581,6 +581,8 @@ def catch_up(a, root: Path, call_dir: Path, cdir: Path):
             continue
         if when < cut:
             st["calls"][p.stem] = True
+            if tasks.call_key(p):
+                st["calls"][tasks.call_key(p)] = True
             continue
         name = str(fm.get("name", "")).strip()
         k = tasks.from_call(root, p, tasks.transcript_of(p), when, name if name and name != UNKNOWN else str(fm.get("phone", "")), st)
