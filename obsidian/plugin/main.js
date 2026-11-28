@@ -967,6 +967,72 @@ class MeetingsChild extends MarkdownRenderChild {
   }
 }
 
+// ---------- 회의록의 할 일 (담당자별) — ```회의할일``` ----------
+class MeetingTasksChild extends MarkdownRenderChild {
+  constructor(plugin, el, sourcePath) { super(el); this.plugin = plugin; this.sourcePath = sourcePath; }
+  onload() { this.render(); this.registerEvent(this.plugin.app.metadataCache.on('changed', (f) => { if (f.path === this.sourcePath) this.render(); })); }
+  async render() {
+    const P = this.plugin, app = P.app, el = this.containerEl;
+    const f = app.vault.getAbstractFileByPath(this.sourcePath);
+    if (!(f instanceof TFile)) return;
+    const text = await app.vault.read(f);
+    const lines = text.split('\n');
+    const items = lines.map((l, i) => parseTask(l, i)).filter((t) => t && /^m/.test(t.id));
+    const people = [...new Set([...text.matchAll(/\*\*([^*]+)\*\*:/g)].map((m) => m[1].trim()))].filter((x) => x && x !== '요약');
+    const owners = [...new Set(['나', ...people, ...items.map((t) => t.who).filter(Boolean)])].filter((x) => x !== '미정');
+    const fm = app.metadataCache.getFileCache(f)?.frontmatter || {};
+    const title = String(fm.title || f.basename);
+    const added = P.data.meetAdded || {};
+    el.empty(); el.addClass('ks-root', 'rd-root', 'mt-root');
+    if (!items.length) { el.createDiv({ cls: 'rd-empty', text: '이 회의에서 나온 할 일이 없어요.' }); return; }
+    const groups = new Map();
+    for (const t of items) { const k = t.who || '미정'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); }
+    const order = [...groups.keys()].sort((a, b) => (a === '나' ? -1 : b === '나' ? 1 : a === '미정' ? 1 : b === '미정' ? -1 : a.localeCompare(b, 'ko')));
+    const head = el.createDiv({ cls: 'rd-section-head' });
+    head.createSpan({ cls: 'rd-section-title', text: `✅ 할 일 ${items.length}개 · 담당자별` });
+    const nUn = (groups.get('미정') || []).length;
+    if (nUn) head.createSpan({ cls: 'sp-check', text: `담당자 정할 일 ${nUn}개` });
+    for (const k of order) {
+      const box = el.createDiv({ cls: 'rd-body mt-group' });
+      box.createDiv({ cls: 'mt-owner', text: k === '나' ? '🙋 나' : k === '미정' ? '❓ 담당자 미정' : `👤 ${k}` });
+      for (const t of groups.get(k)) {
+        const x = box.createDiv({ cls: 'rd-list-row' });
+        const c = x.createEl('input', { type: 'checkbox' });
+        c.checked = /[xX]/.test(t.status);
+        c.onchange = () => this.updateLine(f, t, { status: c.checked ? 'x' : ' ' });
+        x.createSpan({ cls: 'rd-text' + (c.checked ? ' rd-done' : ''), text: t.text });
+        if (t.due) { const n = -daysSince(t.due); x.createSpan({ cls: 'rd-dday' + (n < 0 ? ' over' : n <= 3 ? ' soon' : ''), text: n < 0 ? `${-n}일 지남` : n === 0 ? '오늘' : `D-${n}` }); }
+        if (k === '나' && added[t.id] !== false) x.createSpan({ cls: 'rd-chip', text: '내 할 일 목록에 있음' });
+        const sel = x.createEl('select', { cls: 'dropdown sp-sel' });
+        for (const o of [...owners, '미정']) sel.createEl('option', { value: o, text: o === '나' ? '🙋 나' : o === '미정' ? '❓ 미정' : o });
+        sel.createEl('option', { value: '__new', text: '＋ 직접 입력…' });
+        sel.value = t.who || '미정';
+        sel.onchange = async () => {
+          let who = sel.value;
+          if (who === '__new') { who = await askText(app, '담당자 이름', '예: 홍길동'); if (!who) { sel.value = t.who || '미정'; return; } }
+          await this.updateLine(f, t, { who });
+          if (who === '나' && !(P.data.meetAdded || {})[t.id]) {
+            // 내 할 일 목록에 추가 (이 회의 노트 링크와 함께)
+            await P.tasks.add({ text: t.text, prio: '보통', due: t.due, time: '', who: title, ctx: `회의: ${title}`,
+              link: `[[${f.basename}|회의 ${f.basename.slice(5, 10).replace('-', '/')}]]` });
+            P.data.meetAdded = { ...(P.data.meetAdded || {}), [t.id]: true };
+            await P.saveData(P.data);
+            new Notice(`🙋 내 할 일로: ${t.text}`);
+          }
+        };
+      }
+    }
+  }
+  async updateLine(f, t, changes) {
+    await this.plugin.app.vault.process(f, (text) => {
+      const ls = text.split('\n');
+      const i = ls.findIndex((l) => l.includes(`🆔 ${t.id}`));
+      if (i >= 0) ls[i] = taskLine({ ...t, ...changes });
+      return ls.join('\n');
+    });
+  }
+}
+
 // ---------- 할 일 → PARA 노트 ----------
 class ParaModal extends Modal {
   constructor(plugin, task, done) { super(plugin.app); this.plugin = plugin; this.task = task; this.done = done; }
@@ -1094,7 +1160,7 @@ class TodoView {
     if (lk) { const a = meta.createEl('a', { text: `🔗 ${lk[2] || lk[1]}`, cls: 'ks-daylink' }); a.onclick = () => this.app.workspace.openLinkText(lk[1], this.plugin.tasks.path, false); }
     const act = row.createDiv({ cls: 'ks-todo-act' });
     if (t.status === ' ') {
-      const inCal = this.calIds.has(`task:${t.id}`), asked = !!(this.plugin.data.calTasks || {})[t.id];
+      const inCal = this.calIds.has(`task:${t.id}`), asked = !!(this.plugin.data.calTasks || {})[t.id] || (this.plugin.data.autoCalTasks !== false && !!t.due && /통화|카톡|회의/.test(t.link || ''));
       const cal = act.createEl('a', { text: inCal ? '📅✓' : asked ? '📅…' : '📅', attr: { 'aria-label': inCal ? '캘린더에 들어감' : asked ? '캘린더에 넣는 중 (Rappo 앱)' : '캘린더에 넣기' } });
       if (!inCal && !asked) cal.onclick = () => this.toCalendar(t);
       const nl = /\[\[([^\]|]+)/.exec(t.note || '');
@@ -1104,12 +1170,27 @@ class TodoView {
     }
     const ed = act.createEl('a', { text: '✏️', attr: { 'aria-label': '고치기' } });
     ed.onclick = () => new TaskModal(this.plugin, t, async (v) => { await tk.update(t, v); this.render(); }).open();
+    if (t.status === '-' && this.calIds.has(`task:${t.id}`)) {
+      const rm = act.createEl('a', { cls: 'sp-check', text: '📅 캘린더에서도 지우기', attr: { 'aria-label': '캘린더에 남아 있는 이 일정을 지워요' } });
+      rm.onclick = async () => {
+        if (!window.confirm(`'${t.text}' 일정을 캘린더에서 지울까요?`)) return;
+        this.plugin.data.calRemove = { ...(this.plugin.data.calRemove || {}), [`task:${t.id}`]: true };
+        await this.plugin.saveData(this.plugin.data);
+        await this.plugin.days.upcoming();
+        new Notice('📅 캘린더에서 지워요 (Rappo 앱이 곧 반영해요)');
+        this.render();
+      };
+    }
     if (t.status === '-') {
       const back = act.createEl('a', { text: '↩︎', attr: { 'aria-label': '되살리기' } });
       back.onclick = async () => { await tk.update(t, { status: ' ' }); this.render(); };
     } else {
       const del = act.createEl('a', { text: '🗑', attr: { 'aria-label': '지우기 (잘못 생긴 할 일)' } });
-      del.onclick = async () => { await tk.update(t, { status: '-' }); this.render(); };
+      del.onclick = async () => {
+        await tk.update(t, { status: '-' });
+        if (this.calIds.has(`task:${t.id}`)) new Notice('캘린더 일정은 그대로 둬요. 지운 일 목록에서 「📅 캘린더에서도 지우기」를 누르면 지워져요.', 8000);
+        this.render();
+      };
     }
   }
 }
@@ -1430,12 +1511,17 @@ class Days {
           notes: `${p.src === 'call' ? '통화' : '카톡'} ${p.room} (${p.said})\n${p.who ? p.who + ': ' : ''}${clean(p.text)}` });
       }
       const ct = this.plugin.data.calTasks || {};
+      // 통화·카톡·회의에서 찾은 할 일은 마감이 있으면 자동으로 캘린더에 (끌 수 있음: data.autoCalTasks=false)
+      const autoT = this.plugin.data.autoCalTasks !== false;
       for (const t of this.plugin.tasks.cache || []) {
-        if (!ct[t.id] || !t.due || t.status === '-') continue;
+        const fromTalk = /통화|카톡|회의/.test(t.link || '');
+        if (!(ct[t.id] || (autoT && fromTalk)) || !t.due || t.status === '-') continue;
         events.push({ id: `task:${t.id}`, title: `✅ ${t.text}`, date: t.due, time: t.time || '',
           notes: [t.who && `누구와: ${t.who}`, t.ctx && `무슨 일: ${t.ctx}`, 'Rappo 할 일'].filter(Boolean).join('\n') });
       }
-      const s = JSON.stringify({ made: today(), events }, null, 1);
+      // 캘린더에서 지우기는 사용자가 확인한 것만 (지운 할 일 → '캘린더에서도 지우기'를 눌렀을 때)
+      const remove = Object.keys(this.plugin.data.calRemove || {});
+      const s = JSON.stringify({ made: today(), events, remove }, null, 1);
       if (this.lastCal !== s) { await this.app.vault.adapter.write(`${this.plugin.manifest.dir}/calendar.json`, s); this.lastCal = s; }
     } catch (e) { console.warn('Rappo: calendar.json', e); }
   }
@@ -1612,8 +1698,15 @@ class ContactDash {
     const pays = await P.spend.load();
     status.remove();
     const td = today(), open = tasks.filter((t) => t.status === ' ');
-    // 오늘 일정: 오늘이 마감인 할 일 · 오늘 약속 · 오늘 챙길 날
+    // 오늘 일정: 캘린더 · 오늘이 마감인 할 일 · 오늘 약속 · 오늘 챙길 날
+    let calToday = [];
+    try {
+      const cd = JSON.parse(await app.vault.adapter.read(`${P.manifest.dir}/calendar-events.json`));
+      calToday = (cd.events || []).filter((e) => e.start.slice(0, 10) === td && !/^✅ /.test(e.title || ''))
+        .map((e) => ({ time: e.allDay ? '' : e.start.slice(11, 16), text: `📆 ${e.title}` }));
+    } catch (e) { /* 캘린더 연결 전 */ }
     const todayItems = [
+      ...calToday,
       ...plans.filter((p) => p.date === td).map((p) => ({ time: p.time || '', text: `📅 ${p.room} · ${clean(p.text).slice(0, 24)}` })),
       ...open.filter((t) => t.due === td).map((t) => ({ time: t.time || '', text: `✅ ${t.text}` })),
       ...ev.filter((e) => e.dday === 0 && !e.guess).map((e) => ({ time: '', text: `${e.kind === 'birth' ? '🎂' : e.kind === 'anniv' ? '💐' : '🗓'} ${e.title}` })),
@@ -1686,10 +1779,19 @@ class ContactDash {
       row.createSpan({ cls: 'rd-dday' + (n < 0 ? ' over' : n <= 3 ? ' soon' : ''), text: n < 0 ? `${-n}일 지남` : n === 0 ? '오늘' : `D-${n}` + (extra || '') });
     };
 
+    // 📆 캘린더 (맥 캘린더·구글 캘린더 — Rappo 앱이 14일치를 calendar-events.json 으로)
+    await this.calendarCard(r);
+
     // 1행: 할 일 | 챙길 날 + 일정 | 이번 달 소비
     const row1 = r.createDiv({ cls: 'rd-row rd-row-3' });
     const tb = section(row1.createDiv({ cls: 'rd-col' }), '✅ 할 일', open.length, modal('✅ 할 일', TodoView));
     const sorted = [...open].sort((a, b) => (PRIO_RANK[a.prio] - PRIO_RANK[b.prio]) || (a.due || '9999').localeCompare(b.due || '9999'));
+    const calIds = new Set((await P.days.calDone())?.ids || []);
+    const leftover = tasks.filter((t) => t.status === '-' && calIds.has(`task:${t.id}`) && !(P.data.calRemove || {})[`task:${t.id}`]);
+    if (leftover.length) {
+      const a = tb.createEl('a', { cls: 'rd-hint sp-check-link', text: `📅 지운 할 일 ${leftover.length}개가 캘린더에 남아 있어요 — 확인 ›` });
+      a.onclick = () => { const m = new ViewModal(P, '✅ 할 일', TodoView); m.onOpen = function () { this.modalEl.addClass('ks-modal'); this.titleEl.setText('🗑 지운 할 일'); const v = new TodoView(P, this.contentEl); v.view = 'del'; v.render(); }; m.open(); };
+    }
     if (!sorted.length) empty(tb, '남은 할 일이 없어요');
     for (const t of sorted.slice(0, 8)) {
       const x = rowEl(tb);
@@ -1748,6 +1850,46 @@ class ContactDash {
     // 📋 PARA 할 일 보드: 시작 전·진행 중 노트와 진행 중 프로젝트
     this.paraBoard(r);
   }
+  async calendarCard(r) {
+    const P = this.plugin, app = this.app;
+    let data = null;
+    try { data = JSON.parse(await app.vault.adapter.read(`${P.manifest.dir}/calendar-events.json`)); } catch (e) { /* 아직 없음 */ }
+    const card = r.createDiv({ cls: 'cal-card' });
+    const now = new Date(), td = today();
+    const left = card.createDiv({ cls: 'cal-today' });
+    left.createDiv({ cls: 'cal-wd', text: `${WEEK[now.getDay()]}요일` });
+    left.createDiv({ cls: 'cal-big', text: String(now.getDate()) });
+    const right = card.createDiv({ cls: 'cal-list' });
+    if (!data) {
+      left.createDiv({ cls: 'cal-none', text: '캘린더 연결 전' });
+      right.createDiv({ cls: 'rd-empty', text: 'Rappo 설정 › 정리·AI·캘린더 › 「접근 허용」을 누르면 맥 캘린더(구글 캘린더 포함) 일정이 여기 보여요.' });
+      return;
+    }
+    const evs = (data.events || []).map((e) => ({ ...e, d: e.start.slice(0, 10), t: e.allDay ? '' : e.start.slice(11, 16), te: e.allDay ? '' : e.end.slice(11, 16) }));
+    const nowHM = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    const todays = evs.filter((e) => e.d === td && (e.allDay || e.te > nowHM));
+    const ev = (box, e, showDay) => {
+      const x = box.createDiv({ cls: 'cal-ev' });
+      x.style.setProperty('--c', e.color || '#7c5cff');
+      x.createDiv({ cls: 'cal-ev-title', text: e.title || '(제목 없음)' });
+      if (!e.allDay) x.createDiv({ cls: 'cal-ev-time', text: `${Number(e.t.slice(0, 2)) < 12 ? '오전' : '오후'} ${((Number(e.t.slice(0, 2)) + 11) % 12) + 1}:${e.t.slice(3)}~${((Number(e.te.slice(0, 2)) + 11) % 12) + 1}:${e.te.slice(3)}` + (e.location ? ` · ${e.location}` : '') });
+    };
+    if (!todays.length) left.createDiv({ cls: 'cal-none', text: '오늘 더 이상 이벤트 없음' });
+    else for (const e of todays.slice(0, 3)) ev(left, e);
+    const later = evs.filter((e) => e.d > td);
+    if (!later.length) right.createDiv({ cls: 'rd-empty', text: '앞으로 2주 동안 일정이 없어요' });
+    let last = '', shown = 0;
+    for (const e of later) {
+      if (shown >= 6) break;
+      if (e.d !== last) {
+        last = e.d;
+        const dd = new Date(e.d + 'T12:00:00');
+        right.createDiv({ cls: 'cal-day', text: `${dd.getMonth() + 1}월 ${dd.getDate()}일 ${WEEK[dd.getDay()]}요일` });
+      }
+      ev(right, e); shown++;
+    }
+  }
+
   paraBoard(r) {
     const app = this.app, td = today();
     const items = [];
@@ -2473,6 +2615,7 @@ module.exports = class RappoSearch extends Plugin {
     this.registerEvent(this.app.metadataCache.on('resolved', later));
     this.app.workspace.onLayoutReady(later);
     this.registerMarkdownCodeBlockProcessor('회의', (src, el, ctx) => ctx.addChild(new MeetingsChild(this, el, ctx.sourcePath)));
+    this.registerMarkdownCodeBlockProcessor('회의할일', (src, el, ctx) => ctx.addChild(new MeetingTasksChild(this, el, ctx.sourcePath)));
     // 프로젝트·영역 노트 오른쪽 위에 🎙 새 회의 버튼
     const views = new WeakMap();
     const mark = () => {

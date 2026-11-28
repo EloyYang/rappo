@@ -153,6 +153,60 @@ def _clean_time(v: str) -> str:
     return f"{int(m.group(1)):02d}:{m.group(2)}" if m and int(m.group(1)) < 24 and int(m.group(2)) < 60 else ""
 
 
+# 내가 하겠다고 한 말 (발화자가 '나'인 줄) — 근거가 원문에 있으면 재확인 없이 통과
+COMMIT_RE = re.compile(r"드리겠|하겠습니다|하겠어요|할게|할께|드릴게|드릴께|보낼게|갈게|연락\s*드|말씀\s*드|알려\s*드|챙길게|해\s*놓을게|해\s*둘게")
+
+
+def _quote_line(quote: str, text: str) -> str:
+    lines = [l for l in text.split("\n") if l.strip()]
+    if not lines:
+        return ""
+    q = _norm(quote)
+    return max(lines, key=lambda l: difflib.SequenceMatcher(None, q, _norm(l)).ratio())
+
+
+def _mine(quote: str, text: str) -> bool:
+    line = _quote_line(quote, text)
+    return bool(re.match(r"^\s*(?:\d{1,2}:\d{2}\s+)?나\s*:", line) and COMMIT_RE.search(line))
+
+
+def vague_due(s: str, base: datetime) -> str:
+    """'다음 주에', '이번 달 안에'처럼 기간만 말했을 때 그 기간의 가장 빠른 날 (다음 주 → 다음 주 월요일).
+    정확한 날짜(12월 3일, 12/3)가 있으면 '' (모델이 계산한 날짜를 쓴다)."""
+    if re.search(r"\d{1,2}\s*월\s*\d{1,2}\s*일|\b\d{1,2}/\d{1,2}\b", s):
+        return ""
+    d = base.date()
+    mon = d - timedelta(days=d.weekday())
+    # 요일까지 말했으면 그 요일 (이번 주 금요일, 다음 주 화요일, 금요일까지)
+    wm = re.search(r"(다다음\s*주|다음\s*주|담주|이번\s*주)?\s*([월화수목금토일])요일", s)
+    if wm:
+        wd = "월화수목금토일".index(wm.group(2))
+        w = re.sub(r"\s", "", wm.group(1) or "")
+        if w == "다다음주":
+            return (mon + timedelta(days=14 + wd)).isoformat()
+        if w in ("다음주", "담주"):
+            return (mon + timedelta(days=7 + wd)).isoformat()
+        day = mon + timedelta(days=wd)
+        return (day if w == "이번주" or day >= d else day + timedelta(days=7)).isoformat()
+    rules = [
+        (r"다다음\s*주", mon + timedelta(days=14)),
+        (r"다음\s*주|담주|다음\s*週", mon + timedelta(days=7)),
+        (r"이번\s*주\s*말|이번\s*주말", mon + timedelta(days=5)),
+        (r"이번\s*주|금주", d),
+        (r"주말", mon + timedelta(days=5) if d.weekday() < 5 else d),
+        (r"다음\s*달|다음\s*월|내달", (d.replace(day=1) + timedelta(days=32)).replace(day=1)),
+        (r"이번\s*달|이달", d),
+        (r"모레", d + timedelta(days=2)),
+        (r"내일|낼", d + timedelta(days=1)),
+        (r"오늘|당일", d),
+        (r"조만간|곧|빠른\s*시일", d + timedelta(days=3)),
+    ]
+    for pat, day in rules:
+        if re.search(pat, s):
+            return day.isoformat()
+    return ""
+
+
 def extract(text: str, base: datetime, partner: str, what: str) -> list[dict]:
     """AI 후보 → 내가 할 일·확정된 것·근거가 원문에 있는 것만."""
     res = _ask(_prompt(text[-7000:], base, partner, what)) or {}
@@ -164,9 +218,13 @@ def extract(text: str, base: datetime, partner: str, what: str) -> list[dict]:
         if len(task) < 3 or it.get("doer") not in ("나", "함께") or it.get("agreed") is not True:
             continue
         quote = str(it.get("quote", ""))
-        if PASSIVE.search(task) or not _grounded(quote, text) or not _confirm(task, quote, text):
+        if PASSIVE.search(task) or not _grounded(quote, text):
             continue
-        due = _clean_due(str(it.get("due", "")), base)
+        if not _mine(quote, text) and not _confirm(task, quote, text):
+            continue
+        # 기간만 말했으면(다음 주 등) 그 기간의 가장 빠른 날, 아니면 모델이 계산한 날짜
+        vd = vague_due(f"{_quote_line(quote, text)} {quote}", base)
+        due = vd or _clean_due(str(it.get("due", "")), base)
         prio = it.get("priority") if it.get("priority") in PRIO else "보통"
         if due and (datetime.strptime(due, "%Y-%m-%d").date() - base.date()).days <= 3:
             prio = "높음"

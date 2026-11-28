@@ -186,9 +186,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.request(["--kakao-db"]) }
         // 챙길 날 알림: 시작 30초 뒤, 그다음 1시간마다 (7·3·1일 전과 당일, 한 번씩)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.checkDays() }
-        dayTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkDays(); self?.syncCalendar() }
+        dayTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in self?.checkDays(); self?.syncCalendar(); self?.exportEvents() }
         windowTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.checkWindow() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [weak self] in self?.syncCalendar() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [weak self] in self?.syncCalendar(); self?.exportEvents() }
+        NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: events, queue: .main) { [weak self] _ in
+            self?.calDebounce?.invalidate()
+            self?.calDebounce = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in self?.exportEvents() }
+        }
     }
 
     // 이미 실행 중일 때 앱을 다시 열면(Finder 더블클릭 등) 설정 창
@@ -580,15 +584,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do { try events.save(ev, span: .thisEvent, commit: false); added[id] = ev.eventIdentifier ?? "?"; n += 1 }
             catch { NSLog("Rappo 캘린더 저장 실패: \(error)") }
         }
+        // 지우기: 플러그인에서 사용자가 '캘린더에서도 지우기'를 확인한 것만
+        var removed: [String] = []
+        for id in (obj["remove"] as? [String]) ?? [] {
+            guard let eid = added[id] else { continue }
+            if let ev = events.event(withIdentifier: eid) {
+                do { try events.remove(ev, span: .thisEvent, commit: false); n += 1 } catch { NSLog("Rappo 캘린더 지우기 실패: \(error)") }
+            }
+            added.removeValue(forKey: id); removed.append(id)
+        }
         if n > 0 { try? events.commit() }
         ud.set(added, forKey: "calAdded")
         // 플러그인이 '캘린더에 들어감'을 보여 줄 수 있게
-        let done: [String: Any] = ["calendar": calLabel(cal), "ids": Array(added.keys)]
+        let done: [String: Any] = ["calendar": calLabel(cal), "ids": Array(added.keys), "removed": removed]
         if let out = try? JSONSerialization.data(withJSONObject: done, options: [.prettyPrinted]) {
             let p = pluginDir + "/calendar-done.json"
             if FileManager.default.contents(atPath: p) != out { try? out.write(to: URL(fileURLWithPath: p)) }
         }
-        if n > 0 { notify("캘린더에 \(n)개 넣었어요", calLabel(cal)) }
+        if n - removed.count > 0 { notify("캘린더에 \(n - removed.count)개 넣었어요", calLabel(cal)) }
+        exportEvents()
+    }
+
+    // 라포 홈의 캘린더 칸: 오늘부터 14일 동안의 일정을 플러그인 폴더에 (맥 캘린더에 연결된 구글 캘린더 포함)
+    func exportEvents() {
+        guard calAccess, !s.vaultDir.isEmpty, FileManager.default.fileExists(atPath: pluginDir) else { return }
+        let cal = Calendar.current, start = cal.startOfDay(for: Date())
+        guard let end = cal.date(byAdding: .day, value: 14, to: start) else { return }
+        let pred = events.predicateForEvents(withStart: start, end: end, calendars: nil)
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; f.timeZone = TimeZone.current
+        func hex(_ c: CGColor?) -> String {
+            guard let c = c, let rgb = NSColor(cgColor: c)?.usingColorSpace(.sRGB) else { return "#7c5cff" }
+            return String(format: "#%02x%02x%02x", Int(rgb.redComponent * 255), Int(rgb.greenComponent * 255), Int(rgb.blueComponent * 255))
+        }
+        let list: [[String: Any]] = events.events(matching: pred).sorted { $0.startDate < $1.startDate }.prefix(60).map { e in
+            ["title": e.title ?? "", "start": f.string(from: e.startDate), "end": f.string(from: e.endDate), "allDay": e.isAllDay,
+             "color": hex(e.calendar.cgColor), "calendar": e.calendar.title, "location": e.location ?? ""]
+        }
+        let obj: [String: Any] = ["made": f.string(from: Date()), "events": list]
+        if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
+            try? data.write(to: URL(fileURLWithPath: pluginDir + "/calendar-events.json"))
+        }
     }
 
     // 로컬 모델(Ollama) 상태

@@ -84,7 +84,44 @@ def _find_note(vault: Path, audio_name: str) -> Path | None:
     return None
 
 
-def _write(note: Path, fm_text: str, title: str, mins: str, segs, dur: int, audio_link: str, added: list[str]):
+def action_items(text: str, when: datetime) -> list[dict]:
+    """회의에서 나온 할 일을 모두 — 누가 하는지(발화자 이름), 모르면 '미정'. 근거 문장이 원문에 있는 것만."""
+    import json as _json
+    import hashlib
+    out, seen = [], set()
+    for c in _chunks(text):
+        p = (f"회의 날짜: {when:%Y-%m-%d} ({'월화수목금토일'[when.weekday()]}요일)\n"
+             "아래 회의 전사문에서 나온 할 일(액션 아이템)을 빠짐없이 뽑아. 각 줄 앞의 '이름:'이 말한 사람이야.\n"
+             "owner=그 일을 맡은 사람: 맡겠다고 말한 사람이나 맡으라고 지목된 사람의 이름표(예: 나, 참석자1, 홍길동) 그대로. "
+             "누가 할지 분명하지 않으면 '미정'.\n"
+             "due=마감 YYYY-MM-DD (말하지 않았으면 빈 문자열), quote=근거 문장을 원문 그대로.\n"
+             '설명 없이 JSON 하나만: {"items":[{"task":"","owner":"","due":"","quote":""}]}\n\n---\n' + c)
+        try:
+            raw = _llm(p)
+            m = re.search(r"\{.*\}", raw, re.S)
+            items = (_json.loads(m.group(0)) if m else {}).get("items") or []
+        except Exception:
+            items = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            task = re.sub(r"\s+", " ", str(it.get("task", ""))).strip(" .-")
+            quote = str(it.get("quote", ""))
+            if len(task) < 3 or not tasks._grounded(quote, c):
+                continue
+            owner = re.sub(r"\s+", "", str(it.get("owner", ""))) or "미정"
+            if owner not in c and owner not in ("나", "미정"):
+                owner = "미정"
+            due = tasks.vague_due(f"{tasks._quote_line(quote, c)} {quote}", when) or tasks._clean_due(str(it.get("due", "")), when)
+            k = tasks._norm(task)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append({"task": task, "owner": owner, "due": due, "id": hashlib.sha1(f"{when}|{task}".encode()).hexdigest()[:6]})
+    return out
+
+
+def _write(note: Path, fm_text: str, title: str, mins: str, segs, dur: int, audio_link: str, acts: list[dict]):
     R = _r()
     ls = (mins or "").strip().splitlines()
     if ls and not ls[0].lstrip().startswith(("#", "-", "*")):      # 첫 줄 = 한 줄 요약
@@ -97,13 +134,15 @@ def _write(note: Path, fm_text: str, title: str, mins: str, segs, dur: int, audi
     for k, v in [("duration", R.q(R.fmt_dur(dur))), ("summary", R.q(first)), ("meeting_done", "true")]:
         fm = R.set_fm(fm, k, v)
     tr = "\n\n".join(R.fmt_line(s) for s in segs) if segs else "(전사문 없음)"
-    todo = "\n".join(f"- {a}" for a in added) if added else "- 이 회의에서 내가 맡은 할 일은 없어요."
+    # 할 일은 담당자별로: 옵시디언의 ```회의할일``` 칸에서 담당자를 바꿀 수 있고, '나'로 정하면 내 할 일 목록에 들어간다
+    lines = [f"- [ ] {a['task']} 👤 {a['owner']}" + (f" 📅 {a['due']}" if a["due"] else "") + f" 🆔 m{a['id']}" for a in acts]
+    todo = "```회의할일\n```\n\n" + ("\n".join(lines) if lines else "- 이 회의에서 나온 할 일은 없어요.")
     note.write_text(
         fm.rstrip("\n") + "\n"
         f"# {title}\n\n"
         f"![[{audio_link}]]\n\n"
         f"## 회의록\n" + (f"> {first}\n\n" if first else "") + f"{body_min or '(정리 실패 — Rappo 설정 › AI 를 확인해 주세요)'}\n\n"
-        f"## 내 할 일\n{todo}\n\n"
+        f"## 할 일 (담당자별)\n{todo}\n\n"
         "## 전사문\n" + tr + "\n",
         encoding="utf-8",
     )
@@ -141,18 +180,18 @@ def run(vault: Path, root: Path, state_path: Path, no_ai: bool = False) -> int:
         segs = R.transcribe(p, other="참석자", meeting=True)
         text = "\n".join((f"{s['speaker']}: " if s["speaker"] else "") + s["text"] for s in segs)
         mins = "" if no_ai or len(text) < 30 else minutes(text, when, title)
-        added = []
+        acts = []
         if not no_ai and len(text) >= 30:
             fm = R.read_fm(note) if note.exists() else {}
             proj = re.sub(r"[\[\]\"]", "", str(fm.get("project") or fm.get("area") or "")).strip(" ,")
-            items = []
-            for c in _chunks(text):
-                items += tasks.extract(c, when, "회의 참석자들", "회의 녹음 전사문(음성인식이라 오인식이 있을 수 있음)")
-            label = f"회의 {when.month}/{when.day}"
-            tasks.add(root, items, proj or title, note.stem, label)
-            added = [f"[ ] {i['task']}" + (f" (📅 {i['due']})" if i["due"] else "") for i in items]
+            acts = action_items(text, when)
+            # 내가 맡은 일은 바로 내 할 일 목록에
+            mine = [{"task": a["task"], "kind": "할일", "due": a["due"], "time": "", "prio": "보통", "context": f"회의: {title}"}
+                    for a in acts if a["owner"] == "나"]
+            tasks.add(root, mine, proj or title, note.stem, f"회의 {when.month}/{when.day}")
+        added = acts
         note.parent.mkdir(parents=True, exist_ok=True)
-        _write(note, fm_text, title, mins, segs, dur, p.name, added)
+        _write(note, fm_text, title, mins, segs, dur, p.name, acts)
         seen[p.name] = note.stem
         tasks.save_state(state_path, st)
         print(f"     ✓ 회의록 · 할 일 {len(added)}개", flush=True)
