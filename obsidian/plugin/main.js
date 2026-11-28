@@ -3128,11 +3128,22 @@ function kTime(s) {
   return `${pad(h)}:${m[3] === '반' ? '30' : pad(+(m[4] || 0))}`;
 }
 const isCalAdd = (q) => CAL_ADD.test(q) || (!!kDate(q) && /(잡아|등록해|넣어)\s*(줘|주세요|줄래|줄 수)/.test(q));
+// 노트를 써 달라는 요청 / 앞에서 쓴 노트를 고쳐 달라는 말
+const WRITE_RE = /(노트|메모|문서|초안|체크리스트|목록|리스트|계획서?|보고서|회의록|기획안|이메일|메일|글|일기|정리본|표)[^?？]{0,20}?(써|작성|만들어|만들어\s*줘|적어)|써\s*줘|써\s*주세요|작성해|작성\s*부탁/;
+const EDIT_RE = /더\s*(짧|길|간단|자세)|\d+\s*줄로|표로|말투|바꿔|고쳐|다시\s*써|빼\s*줘|줄여/;
+// 답에 나온 날짜 중 오늘 이후 것 (캘린더에 넣을까요? 제안용)
+function futureDates(s) {
+  const out = [], td = today();
+  const re = /(?:(\d{2,4})\s*년\s*)?(\d{1,2})\s*월\s*(\d{1,2})\s*일|(\d{4})-(\d{2})-(\d{2})/g;
+  let m;
+  while ((m = re.exec(s))) { const d = kDate(m[0]); if (d && d >= td && !out.includes(d)) out.push(d); }
+  return out;
+}
 const addHour = (t) => { const [h, mi] = t.split(':').map(Number); return `${String(Math.min(23, h + 1)).padStart(2, '0')}:${String(mi).padStart(2, '0')}`; };
 
 class AIView extends ItemView {
   constructor(leaf, plugin) {
-    super(leaf); this.plugin = plugin; this.mode = 'ask'; this.logs = false; this.useNote = false; this.useVault = true; this.busy = null;
+    super(leaf); this.plugin = plugin; this.logs = false; this.useNote = false; this.useVault = true; this.busy = null;
     this.sess = this.newSess(); this.showHist = false;
   }
   getViewType() { return AI_VIEW; }
@@ -3167,16 +3178,12 @@ class AIView extends ItemView {
     hist.onclick = () => { this.showHist = !this.showHist; this.draw(); };
     const nw = hb.createEl('button', { cls: 'rai-hbtn', text: '＋ 새 대화', attr: { 'aria-label': '앞 대화와 상관없이 새로 묻기' } });
     nw.onclick = () => { if (this.busy) return; this.sess = this.newSess(); this.showHist = false; this.draw(); };
-    const tabs = c.createDiv({ cls: 'rai-tabs' });
-    for (const [k, t] of [['ask', '🔎 노트에게 묻기'], ['write', '✍️ 노트 쓰기']]) {
-      const b = tabs.createEl('button', { cls: 'rai-tab' + (this.mode === k ? ' is-active' : ''), text: t });
-      b.onclick = () => { this.mode = k; this.draw(); };
-    }
     this.log = c.createDiv({ cls: 'rai-log' });
     if (this.showHist) this.drawHist();
     else if (!this.sess.turns.length && !this.pending) this.empty();
     else {
-      for (const t of this.sess.turns) { const el = this.card(t); this.finish(el, t); }
+      const last = this.sess.turns[this.sess.turns.length - 1];
+      for (const t of this.sess.turns) { const el = this.card(t); this.finish(el, t).then(() => { if (t === last && !this.pending) this.suggest(el, t); }); }
       if (this.pending) this.log.appendChild(this.pending);
       setTimeout(() => { this.log.scrollTop = this.log.scrollHeight; }, 0);
     }
@@ -3185,19 +3192,15 @@ class AIView extends ItemView {
     this.drawOpts = () => {
       this.opts.empty();
       const chip = (label, on, fn) => { const x = this.opts.createEl('button', { cls: 'rai-chip' + (on ? ' is-on' : ''), text: label }); x.onclick = () => { fn(); this.drawOpts(); }; };
-      if (this.mode === 'ask') chip('💬 대화·통화 기록도', this.logs, () => { this.logs = !this.logs; });
-      else {
-        chip('📚 내 노트 참고', this.useVault, () => { this.useVault = !this.useVault; });
-        const f = this.lastMd && this.lastMd.file;
-        chip(f ? `📄 지금 노트: ${f.basename.slice(0, 14)}` : '📄 지금 노트 (열린 노트 없음)', this.useNote && !!f, () => { this.useNote = !this.useNote; });
-      }
+      chip('💬 대화·통화 기록도', this.logs, () => { this.logs = !this.logs; });
+      const f = this.lastMd && this.lastMd.file;
+      chip(f ? `📄 지금 노트 참고: ${f.basename.slice(0, 14)}` : '📄 지금 노트 (열린 노트 없음)', this.useNote && !!f, () => { this.useNote = !this.useNote; });
     };
     this.drawOpts();
     const more = this.sess.turns.length > 0;
     this.ta = box.createEl('textarea', { cls: 'rai-ta', attr: { rows: 3, placeholder: more
-      ? (this.mode === 'ask' ? '이어서 물어보세요. 예) 그럼 언제 만나기로 했어?' : '이어서 고쳐 달라고 해 보세요. 예) 더 짧게, 표로 바꿔줘')
-      : this.mode === 'ask' ? '예) 길동이형이랑 12월 일정 어떻게 정했지?\n(Enter 보내기 · Shift+Enter 줄바꿈)'
-      : '예) 다음 주 워크숍 준비 체크리스트 노트 만들어줘\n예) 지금 노트를 3줄로 요약해줘' } });
+      ? '이어서 물어보거나 시켜 보세요. 예) 그럼 언제 만나기로 했어? · 더 짧게 고쳐줘'
+      : '무엇이든 물어보거나 시켜 보세요.\n예) 길동이형이랑 12월 일정 어떻게 정했지? · 워크숍 체크리스트 노트 써줘 · 내일 3시 치과 캘린더에 넣어줘' } });
     this.ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); } };
     const row = box.createDiv({ cls: 'rai-send-row' });
     row.createSpan({ cls: 'rai-hint', text: more ? `💬 앞 대화에 이어서 답해요 (${this.sess.turns.length}) · 새 주제는 ＋ 새 대화` : '🔒 내 맥 안에서만 처리돼요' });
@@ -3229,18 +3232,13 @@ class AIView extends ItemView {
   }
   empty() {
     const e = this.log.createDiv({ cls: 'rai-empty' });
-    if (this.mode === 'ask') {
-      e.createDiv({ text: '내 노트 · 대화 기록 · 캘린더에서 찾아서, 적힌 것만으로 답해요.' });
-      e.createDiv({ cls: 'rai-muted', text: '이어서 물으면 앞 대화를 기억해요 · 새 주제는 ＋ 새 대화' });
-    } else {
-      e.createDiv({ text: '요청대로 노트를 써 드려요. 관련 노트나 지금 열린 노트를 참고할 수 있어요.' });
-      e.createDiv({ cls: 'rai-muted', text: '"더 짧게"처럼 이어서 고쳐 달라고 할 수 있어요' });
-    }
+    e.createDiv({ text: '물어보면 내 노트 · 대화 기록 · 캘린더에서 찾아 답하고, 노트를 써 달라면 쓰고, 일정을 넣어 달라면 캘린더에 넣을 준비를 해요.' });
+    e.createDiv({ cls: 'rai-muted', text: '무엇을 할지는 질문을 보고 알아서 정해요 · 이어서 물으면 앞 대화를 기억해요' });
   }
   card(t) {
     if (!this.log.querySelector('.rai-card')) this.log.empty();
     const el = this.log.createDiv({ cls: 'rai-card' });
-    el.createDiv({ cls: 'rai-q', text: (t.mode === 'write' ? '✍️ ' : '') + t.q });
+    el.createDiv({ cls: 'rai-q', text: t.q });
     return el;
   }
   // 답 한 개 그리기 (방금 받은 답 · 지난 대화 모두)
@@ -3278,7 +3276,30 @@ class AIView extends ItemView {
       btn('⤵ 지금 노트에 넣기', () => this.insert(t.a));
     }
     btn('복사', () => { navigator.clipboard.writeText(t.a); new Notice('복사했어요'); });
-    if (t.mode === 'ask') btn('📝 이 답을 노트로', () => this.saveNew(`# ${t.q.replace(/[?？]\s*$/, '')}\n\n${t.a}`));
+  }
+  // 답을 보고 다음에 할 일 제안: 노트로 쓸까요? · 캘린더에 추가할까요? (가장 최근 답에만)
+  async suggest(el, t) {
+    this.log.querySelectorAll('.rai-sug').forEach((x) => x.remove());
+    if (t.err || t.mode !== 'ask' || !t.a || /찾지 못했어요/.test(t.a)) return;
+    let dates = futureDates(t.a);
+    const canNote = t.a.replace(/\s+/g, '').length >= 40;
+    // 이미 캘린더에 있는 일정(답에 그 제목이 나온 같은 날 일정)이면 넣자고 하지 않는다
+    if (dates.length) {
+      let data = null;
+      try { data = JSON.parse(await this.app.vault.adapter.read(`${this.plugin.manifest.dir}/calendar-events.json`)); } catch (e) { /* 없음 */ }
+      const nk = (x) => String(x || '').replace(/[^0-9A-Za-z가-힣]/g, ''), na = nk(t.a);
+      const has = (d) => (data && data.events || []).some((e) => String(e.start || '').slice(0, 10) === d && nk(e.title).length >= 2 &&
+        (na.includes(nk(e.title)) || nk(e.title).match(/[가-힣A-Za-z0-9]{2,}/g)?.some((w) => w.length >= 2 && na.includes(w) && /캘린더/.test(t.a))));
+      dates = dates.filter((d) => !has(d));
+    }
+    if (!dates.length && !canNote) return;
+    const box = el.createDiv({ cls: 'rai-sug' });
+    box.createSpan({ cls: 'rai-muted', text: '이어서 할까요? ' });
+    if (canNote) box.createEl('button', { text: '📝 이 내용으로 노트를 쓸까요?' }).onclick = () =>
+      this.send('앞 답의 내용을 정리해서 노트로 써줘', { mode: 'write', show: '📝 이 내용으로 노트를 써줘' });
+    if (dates.length) box.createEl('button', { text: '📅 캘린더에 추가할까요?' }).onclick = () =>
+      this.send('앞 답에 나온 일정을 캘린더에 추가해줘', { mode: 'cal', show: '📅 캘린더에 추가해줘', dateHint: dates[0] });
+    this.log.scrollTop = this.log.scrollHeight;
   }
   // 캘린더에 넣을 일정 확인 칸: 누르기 전에는 캘린더에 쓰지 않는다
   async evCard(el, t) {
@@ -3294,6 +3315,11 @@ class AIView extends ItemView {
     const cals = (data && data.calendars) || [];
     const calName = (cals.find((c) => c.id === (data && data.defaultCal)) || cals[0] || {}).title;
     if (calName) box.createDiv({ cls: 'rai-muted', text: `캘린더: ${calName}` });
+    // 같은 날 비슷한 일정이 이미 있으면 알려 준다 (두 번 넣지 않게)
+    const nk = (x) => String(x || '').replace(/[^0-9A-Za-z가-힣]/g, '');
+    const dup = ev.date && data && (data.events || []).find((e) => String(e.start || '').slice(0, 10) === ev.date &&
+      (nk(e.title).includes(nk(ev.title)) || nk(ev.title).includes(nk(e.title))) && nk(e.title).length >= 2);
+    if (dup && !t.evDone) box.createDiv({ cls: 'rai-ev-dup', text: `⚠️ 이 날 캘린더에 이미 '${dup.title}'${dup.allDay ? '' : ` (${String(dup.start).slice(11, 16)})`} 일정이 있어요` });
     const row = box.createDiv({ cls: 'rai-acts' });
     const done = (op) => { t.evDone = { title: op.title, date: (op.start || '').slice(0, 10) }; this.saveSess(); row.empty(); row.createSpan({ cls: 'rai-ev-ok', text: '✓ 캘린더에 넣었어요 (곧 맥·구글 캘린더에 반영)' }); };
     if (t.evDone) { row.createSpan({ cls: 'rai-ev-ok', text: '✓ 캘린더에 넣었어요' }); return; }
@@ -3313,12 +3339,22 @@ class AIView extends ItemView {
     }
     row.createEl('button', { text: '✏️ 고쳐서 넣기' }).onclick = () => new EventModal(P, null, ev.date || today(), data, null, pre).open();
   }
-  async send() {
-    const q = this.ta.value.trim();
+  // 묻기·쓰기·일정 넣기를 질문을 보고 정한다: 분명한 말은 규칙으로, 아니면 모델이 (검색어와 함께) 판단
+  route(q, prev) {
+    if (isCalAdd(q)) return 'cal';
+    if (WRITE_RE.test(q)) return 'write';
+    const lastT = prev[prev.length - 1];
+    if (lastT && lastT.mode === 'write' && EDIT_RE.test(q)) return 'write';
+    return null;
+  }
+  async send(qIn, opt = {}) {
+    const q = (qIn || this.ta.value).trim();
     if (!q || this.busy) return;
-    this.ta.value = '';
-    const mode = this.mode, prev = this.sess.turns.filter((x) => !x.err).slice(-3);
-    const t = { mode, q, at: new Date().toISOString() };
+    if (!qIn) this.ta.value = '';
+    this.log.querySelectorAll('.rai-sug').forEach((x) => x.remove());
+    const prev = this.sess.turns.filter((x) => !x.err).slice(-3);
+    let mode = opt.mode || this.route(q, prev);
+    const t = { mode: mode || 'ask', q: opt.show || q, at: new Date().toISOString() };
     if (this.showHist) { this.showHist = false; this.draw(); }
     const el = this.card(t); this.pending = el;
     const st = el.createDiv({ cls: 'rai-status', text: prev.length ? '앞 대화와 이어서 보는 중…' : '노트 찾는 중…' });
@@ -3332,16 +3368,32 @@ class AIView extends ItemView {
     try {
       // 1) 이어서 묻는 말이면 앞 대화 없이도 알아듣게 풀어 쓰고(sq), 노트 검색어(kw)도 함께
       let hits = [], terms = [], sq = q;
-      const needVault = mode === 'ask' || this.useVault;
-      if (needVault || prev.length) {
+      const needVault = true;
+      {
         let kw = [];
         try {
           // 작은 모델은 '풀어 쓰기'를 시키면 답을 해 버려서, 검색어만 뽑게 한다 (앞 질문은 문맥으로만)
-          const ask = `아래 ${mode === 'ask' ? '질문' : '요청'}에 맞는 옵시디언 노트·대화를 찾으려고 해. 찾을 검색어 3~6개(사람 이름, 고유명사, 핵심 명사, 비슷한 말)를 JSON 배열로만 답해. 답이나 설명은 쓰지 마. 예: ["워크숍","준비물","체크리스트"]\n` +
-            (prev.length ? `('거기·그 사람·그럼' 같은 말은 앞 질문이 가리키는 것: ${prev.map((x) => x.q).join(' / ')})\n` : '') + `\n${q}`;
-          const raw = await AI.chat([{ role: 'user', content: ask }], { max: 80, temp: 0, signal: ctl.signal, status: (s) => st.setText(s) });
-          const m = raw.match(/\[[\s\S]*?\]/); kw = m ? JSON.parse(m[0]) : [];
+          // 무엇을 할지(답·노트·일정)가 규칙으로 안 정해졌으면 여기서 함께 판단
+          const ctxQ = prev.length ? `('거기·그 사람·그럼·그거' 같은 말은 앞 질문이 가리키는 것: ${prev.map((x) => x.q).join(' / ')})\n` : '';
+          const ask = mode
+            ? `아래 요청에 맞는 옵시디언 노트·대화를 찾으려고 해. 찾을 검색어 3~6개(사람 이름, 고유명사, 핵심 명사, 비슷한 말)를 JSON 배열로만 답해. 답이나 설명은 쓰지 마. 예: ["워크숍","준비물","체크리스트"]\n${ctxQ}\n${q}`
+            : `아래 사용자 말을 보고 두 가지를 정해. 설명 없이 JSON 하나만: {"intent":"answer|note|calendar","keywords":["..."]}\n` +
+              `intent: 노트·문서·글·목록을 새로 써 달라거나 앞에서 쓴 노트를 고쳐 달라면 note, 캘린더에 새 일정을 넣어 달라면 calendar (일정이 언제인지 묻거나 알려 달라는 건 answer), 그 밖에 묻거나 찾거나 알려 달라면 answer (애매하면 answer).\n` +
+              `keywords: 옵시디언 노트·대화를 찾을 검색어 3~6개(사람 이름, 고유명사, 핵심 명사, 비슷한 말). 답은 쓰지 마.\n${ctxQ}\n${q}`;
+          const raw = await AI.chat([{ role: 'user', content: ask }], { max: 100, temp: 0, signal: ctl.signal, status: (s) => st.setText(s) });
+          if (mode) { const m = raw.match(/\[[\s\S]*?\]/); kw = m ? JSON.parse(m[0]) : []; }
+          else {
+            const m = raw.match(/\{[\s\S]*\}/); let o = {};
+            try { o = m ? JSON.parse(m[0]) : {}; } catch (e) { const a = raw.match(/\[[\s\S]*?\]/); try { o = { keywords: a ? JSON.parse(a[0]) : [] }; } catch (e2) { o = {}; } const i = raw.match(/"intent"\s*:\s*"(\w+)"/); if (i) o.intent = i[1]; }
+            kw = Array.isArray(o.keywords) ? o.keywords : [];
+            mode = { note: 'write', calendar: 'cal' }[o.intent] || null;
+            // 모델이 잘못 고르는 것 막기: 넣어 달라는 말이 없으면 일정 넣기 아님, 쓰거나 고쳐 달라는 말이 없으면 노트 쓰기 아님
+            if (mode === 'cal' && !/(추가|넣|등록|기록|잡아|적어|저장|올려)/.test(q)) mode = null;
+            if (mode === 'write' && !/(노트|메모|문서|남겨|써|작성|만들|적어|고쳐|바꿔|줄여|목록|리스트|초안)/.test(q)) mode = null;
+          }
         } catch (e) { if (e.name === 'AbortError') throw e; }
+        if (!mode) mode = 'ask';
+        t.mode = mode;
         // 이어 묻는 말: 앞 질문 낱말도 뒤에 붙여 (검색은 지금 질문 낱말이 먼저)
         if (prev.length) sq = `${q} ${prev[prev.length - 1].q}`;
         t.sq = sq;
@@ -3357,11 +3409,11 @@ class AIView extends ItemView {
         }
       }
       const src = hits.map((h, i) => `[노트 ${i + 1}] [[${h.f.basename}]] (${h.f.parent ? h.f.parent.path : ''})\n${F.snippet(h.f, terms, mode === 'ask' ? 1000 : 900)}`).join('\n\n');
-      const cur = mode === 'write' && this.useNote && this.lastMd && this.lastMd.file ? this.lastMd.file : null;
+      const cur = this.useNote && this.lastMd && this.lastMd.file ? this.lastMd.file : null;
       const curText = cur ? (await this.app.vault.cachedRead(cur)).replace(/^---\n[\s\S]*?\n---\n/, '').slice(0, 6000) : '';
       // 대화·통화 기록: 질문(이나 앞 대화)에 사람이 나오면 늘, 💬 를 켜 두면 질문 낱말로도
       let convo = null;
-      if (mode === 'ask') {
+      if (mode !== 'write') {
         st.setText('대화 기록 찾는 중…');
         const lastPeople = [...prev].reverse().find((x) => x.people && x.people.length)?.people || [];
         try {
@@ -3372,11 +3424,11 @@ class AIView extends ItemView {
       }
       // 캘린더 일정 (묻기는 늘, 쓰기는 '내 노트 참고'를 켰을 때)
       let cal = null;
-      if (mode === 'ask' || this.useVault) {
-        try { cal = await calContext(P, `${q} ${mode === 'ask' && prev.length ? prev[prev.length - 1].q : ''}`, terms, convo ? convo.people : []); } catch (e) { console.warn('Rappo AI: 캘린더', e); }
+      {
+        try { cal = await calContext(P, `${q} ${mode !== 'write' && prev.length ? prev[prev.length - 1].q : ''}`, terms, convo ? convo.people : []); } catch (e) { console.warn('Rappo AI: 캘린더', e); }
         if (cal && !cal.n) cal = null;
       }
-      if (mode === 'ask' && !hits.length && !convo && !cal && !isCalAdd(q)) {
+      if (mode === 'ask' && !hits.length && !convo && !cal && !cur) {
         t.a = '관련된 노트나 대화를 찾지 못했어요. 다른 낱말로 물어봐 주세요.' + (this.logs ? '' : ' (대화·통화 기록까지 찾으려면 아래 💬 를 켜 주세요)'); t.err = true;
         st.remove(); ans.setText(t.a); return;
       }
@@ -3385,21 +3437,22 @@ class AIView extends ItemView {
       const csrc = convo ? `\n[대화·통화 기록 — '나'는 사용자 본인${convo.people.length ? `, 질문 속 사람: ${convo.people.map((p) => p.name).join(', ')}` : ''}. 단체방 이름과 날짜를 함께 봐]\n${convo.text}\n` : '';
       const hblock = prev.length ? `\n[앞 대화 — 새 질문이 이걸 이어 묻는 것이면 같은 사람·주제로 이어서 답해. '거기·그 사람·그럼'은 앞 대화에서 말한 것을 가리켜]\n${history}\n` : '';
       // 캘린더에 넣어 달라는 요청: 답 대신 넣을 일정을 정리해서 확인 칸으로
-      if (mode === 'ask' && isCalAdd(q)) {
+      if (mode === 'cal') {
         st.setText('넣을 일정 정리하는 중…');
         const ep = `오늘은 ${today()}. 사용자가 캘린더에 일정을 넣어 달라고 해. 아래 요청·앞 대화·근거를 보고 넣을 일정 하나를 정해.\n` +
           `설명 없이 JSON 하나만: {"title":"짧은 일정 제목(예: 치과 정기검진)","date":"YYYY-MM-DD 또는 빈 문자열","start":"HH:MM 또는 빈 문자열","end":"HH:MM 또는 빈 문자열","location":"","notes":"근거 한 줄"}\n` +
-          `제목은 요청에 나온 말로 짧게 (요청에 없는 내용을 덧붙이지 마). '캘린더·추가·해줘' 같은 말은 빼. 요청에 날짜가 있으면 그 날짜를 써. 날짜가 요청에 없으면 근거·앞 대화에서 찾고, 그래도 모르면 빈 문자열.\n${hblock}\n${src}${csrc}${ksrc}\n요청: ${q}`;
+          `제목은 요청에 나온 말로 짧게 (요청에 없는 내용을 덧붙이지 마. 예: '12월 20일 2시 미용실 예약했어 기록해둬' → '미용실 예약'). '캘린더·추가·해줘·기록' 같은 말은 빼. 요청에 날짜가 있으면 그 날짜를 써. 날짜가 요청에 없으면 근거·앞 대화에서 찾고, 그래도 모르면 빈 문자열.\n` +
+          (kDate(q) ? '' : `${hblock}\n${src}${csrc}${ksrc}`) + `\n요청: ${q}`;   // 요청에 날짜가 있으면 다른 노트에 끌려가지 않게 근거 없이
         let ev = {};
         try { const raw = await AI.chat([{ role: 'user', content: ep }], { max: 220, temp: 0, signal: ctl.signal, status: (s) => st.setText(s) }); const m = raw.match(/\{[\s\S]*\}/); ev = m ? JSON.parse(m[0]) : {}; } catch (e) { if (e.name === 'AbortError') throw e; }
         const clean = (x) => String(x || '').replace(/\s+/g, ' ').trim();
         const title = clean(ev.title).replace(/(을|를)?\s*(캘린더|달력|일정)(에|으로|로)?\s*(추가|등록|넣).*$/, '').replace(/\s*(일정|스케줄|스케쥴)$/, '').trim()
           || clean(q.replace(CAL_ADD, '').replace(/(을|를|에|로|으로)?\s*(해\s*줘|해\s*주세요|줘|주세요)[.!]?$/, ''));
-        const date = kDate(q) || (/^\d{4}-\d{2}-\d{2}$/.test(clean(ev.date)) ? clean(ev.date) : '');
+        const date = kDate(q) || (/^\d{4}-\d{2}-\d{2}$/.test(clean(ev.date)) ? clean(ev.date) : '') || opt.dateHint || '';
         const tq = kTime(q.replace(/\d{2,4}\s*년|\d{1,2}\s*월|\d{1,2}\s*일/g, ' '));
         const start = tq || (/^\d{2}:\d{2}$/.test(clean(ev.start)) ? clean(ev.start) : '');
         const end = start ? (/^\d{2}:\d{2}$/.test(clean(ev.end)) && clean(ev.end) > start && !tq ? clean(ev.end) : addHour(start)) : '';
-        t.ev = { title, date, start, end, allDay: !start, location: clean(ev.location) && q.includes(clean(ev.location)) ? clean(ev.location) : '', notes: `Rappo AI: ${q}`.slice(0, 200) };
+        t.ev = { title, date, start, end, allDay: !start, location: clean(ev.location) && q.includes(clean(ev.location)) ? clean(ev.location) : '', notes: 'Rappo AI에서 추가' };
         const W = '일월화수목금토', dd = date ? new Date(date + 'T12:00:00') : null;
         t.a = date ? `이 일정을 캘린더에 넣을게요. 맞으면 **📅 캘린더에 넣기**를, 고칠 게 있으면 **✏️ 고쳐서 넣기**를 눌러 주세요.\n\n- ${title} · ${dd.getFullYear() !== new Date().getFullYear() ? dd.getFullYear() + '년 ' : ''}${dd.getMonth() + 1}월 ${dd.getDate()}일(${W[dd.getDay()]})${start ? ` ${start}` : ' 하루 종일'}`
           : `캘린더에 넣을 날짜를 찾지 못했어요. **✏️ 고쳐서 넣기**에서 날짜를 정하거나, "7월 22일에 넣어줘"처럼 날짜를 알려 주세요.`;
@@ -3411,9 +3464,10 @@ class AIView extends ItemView {
       const day = today();
       const qline = q;
       const prompt = mode === 'ask'
-        ? `오늘은 ${day}. 너는 사용자의 옵시디언 노트와 대화 기록을 근거로만 답하는 비서야.\n규칙: 아래 노트 발췌·대화 기록·캘린더 일정(그리고 앞 대화)에 있는 내용으로만 한국어로 짧고 분명하게 답해. 숫자와 단위는 붙여 써(12월, 3시). 대화를 물으면 최근 것부터 날짜와 함께(어느 방에서였는지도) 정리해. 메시지 수 같은 통계는 말하지 마. 없으면 "노트에서 찾지 못했어요"라고 해. 추측하거나 지어내지 마. 근거가 된 노트는 문장 끝에 [[노트 이름]]으로 붙여. 캘린더 일정에서 온 내용에는 [[ ]] 대신 (캘린더)라고 붙이고, 대화 기록에서 온 내용에는 (방 이름 대화)라고 붙여.\n${hblock}\n${src}${csrc}${ksrc}\n${prev.length ? '새 질문에만 답해. 앞 대화에서 이미 한 답을 되풀이하지 마.\n' : ''}새 질문: ${qline}`
+        ? `오늘은 ${day}. 너는 사용자의 옵시디언 노트와 대화 기록을 근거로만 답하는 비서야.\n규칙: 아래 노트 발췌·대화 기록·캘린더 일정(그리고 앞 대화)에 있는 내용으로만 한국어로 짧고 분명하게 답해. 숫자와 단위는 붙여 써(12월, 3시). 대화를 물으면 최근 것부터 날짜와 함께(어느 방에서였는지도) 정리해. 메시지 수 같은 통계는 말하지 마. 없으면 "노트에서 찾지 못했어요"라고 해. 추측하거나 지어내지 마. 근거가 된 노트는 문장 끝에 [[노트 이름]]으로 붙여. 캘린더 일정에서 온 내용에는 [[ ]] 대신 (캘린더)라고 붙이고, 대화 기록에서 온 내용에는 (방 이름 대화)라고 붙여.\n${hblock}\n${curText ? `[지금 열린 노트: [[${cur.basename}]]]\n${curText}\n\n` : ''}${src}${csrc}${ksrc}\n${prev.length ? '새 질문에만 답해. 앞 대화에서 이미 한 답을 되풀이하지 마.\n' : ''}새 질문: ${qline}`
         : `오늘은 ${day}. 너는 사용자의 옵시디언 노트를 쓰는 비서야.\n요청대로 마크다운 노트를 써. 첫 줄은 '# 제목'. 머리말이나 설명 없이 노트 내용만. 소제목(##)·목록·체크박스(- [ ])를 알맞게 써. 숫자와 단위는 붙여 써(12월, 3시).\n` +
           `참고 노트는 그대로 베끼지 말고 요청에 맞게 새로 구성해. 참고 노트의 체크 상태([ ]/[x])·날짜·숫자는 바꾸지 마. 요청과 관계없는 참고 노트는 쓰지 마.\n` +
+          (!lastW && prev.length && prev[prev.length - 1].mode === 'ask' ? `\n[앞 대화의 질문과 답 — 요청이 이걸 가리키면('앞 답·이 내용' 등) 이 내용으로 써]\n질문: ${prev[prev.length - 1].q}\n답: ${prev[prev.length - 1].a}\n` : '') +
           (lastW ? `\n[앞에서 쓴 노트]\n${lastW.a}\n\n요청이 앞 노트를 고치라는 것(더 짧게·표로·말투 등)이면 앞 노트를 요청대로 실제로 바꿔서 전체를 다시 써. 그대로 베끼면 안 돼 — 줄 수·길이 요청은 꼭 지켜.\n` : '') +
           (curText ? `\n[지금 열린 노트: ${cur.basename}]\n${curText}\n` : '') +
           (src && !lastW ? `\n[참고할 내 노트 — 관련 있을 때만 쓰고, 쓴 곳에는 [[노트 이름]] 링크]\n${src}\n` : '') +
@@ -3434,6 +3488,7 @@ class AIView extends ItemView {
       t.notes = show.map((h) => h.f.path);
       if (convo) { t.people = convo.people; t.n = convo.n; t.rooms = convo.rooms.slice(0, 6).map((r) => ({ room: r.room, kind: r.kind, path: r.file.path })); }
       await this.finish(el, t);
+      this.suggest(el, t);
     } catch (e) {
       t.err = true; t.a = e.name === 'AbortError' ? '멈췄어요' : `⚠️ ${e.message || e}`;
       st.setText(t.a); st.addClass('is-err');
@@ -3590,9 +3645,9 @@ module.exports = class RappoSearch extends Plugin {
       let leaf = this.app.workspace.getLeavesOfType(AI_VIEW)[0];
       if (!leaf) { leaf = this.app.workspace.getRightLeaf(false); await leaf.setViewState({ type: AI_VIEW, active: true }); }
       this.app.workspace.revealLeaf(leaf);
-      const v = leaf.view; if (mode && v && v.mode !== mode) { v.mode = mode; v.draw(); }
+
     };
-    this.addRibbonIcon('sparkles', 'Rappo AI (노트에게 묻기 · 쓰기)', () => openAI());
+    this.addRibbonIcon('sparkles', 'Rappo AI (묻기 · 노트 쓰기 · 일정 넣기)', () => openAI());
     this.addCommand({ id: 'ai-ask', name: 'Rappo AI 노트에게 묻기', callback: () => openAI('ask') });
     this.addCommand({ id: 'ai-write', name: 'Rappo AI 노트 쓰기', callback: () => openAI('write') });
     this.addRibbonIcon('message-circle', 'Rappo 대화·통화 검색', () => new SearchModal(this).open());
