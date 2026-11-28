@@ -316,3 +316,9 @@ div.ks-section-head { cursor: default; }
 .cal-mhead { display: flex; align-items: baseline; gap: 8px; }
 .ks-task-form textarea { width: 100%; resize: vertical; }
 .rd-person-inline { border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 12px 14px; }
+/* v26: 달력 달 넘기기 */
+.cal-mhead { align-items: center; }
+.cal-nav { height: 24px; min-width: 26px; padding: 0 8px; font-size: 15px; line-height: 1; border-radius: 6px; cursor: pointer; box-shadow: none; }
+.cal-today-btn { font-size: 12px; }
+.cal-mhead .cal-mtitle { min-width: 118px; text-align: center; }
+.cal-mhead .rd-more { margin-left: auto; }

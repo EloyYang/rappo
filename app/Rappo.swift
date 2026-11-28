@@ -626,23 +626,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         exportEvents()
     }
 
-    // 라포 홈의 캘린더 칸: 이번 달 달력과 앞으로 2주 일정을 플러그인 폴더에 (맥 캘린더에 연결된 구글 캘린더 포함)
+    // 라포 홈의 캘린더 칸: 3달 전 ~ 6달 뒤 일정을 플러그인 폴더에 (맥 캘린더에 연결된 구글 캘린더 포함)
     func exportEvents() {
         guard calAccess, !s.vaultDir.isEmpty, FileManager.default.fileExists(atPath: pluginDir) else { return }
         // 이번 달 달력(6주) + 앞으로 2주: 이번 달 1일이 든 주의 일요일부터 6주, 그리고 오늘부터 14일 중 늦은 쪽까지
         var cal = Calendar(identifier: .gregorian); cal.firstWeekday = 1
         let today0 = cal.startOfDay(for: Date())
-        let first = cal.date(from: cal.dateComponents([.year, .month], from: today0)) ?? today0
+        let thisMonth = cal.date(from: cal.dateComponents([.year, .month], from: today0)) ?? today0
+        // 라포 홈 달력에서 ‹ › 로 넘겨 볼 수 있게: 3달 전 ~ 6달 뒤 (각 달 달력의 6주 칸까지)
+        let first = cal.date(byAdding: .month, value: -3, to: thisMonth) ?? thisMonth
         let start = cal.date(byAdding: .day, value: -(cal.component(.weekday, from: first) - 1), to: first) ?? first
-        guard let gridEnd = cal.date(byAdding: .day, value: 42, to: start), let soonEnd = cal.date(byAdding: .day, value: 14, to: today0) else { return }
-        let end = max(gridEnd, soonEnd)
+        guard let lastMonth = cal.date(byAdding: .month, value: 7, to: thisMonth) else { return }
+        let end = cal.date(byAdding: .day, value: 14, to: lastMonth) ?? lastMonth
         let pred = events.predicateForEvents(withStart: start, end: end, calendars: nil)
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; f.timeZone = TimeZone.current
         func hex(_ c: CGColor?) -> String {
             guard let c = c, let rgb = NSColor(cgColor: c)?.usingColorSpace(.sRGB) else { return "#7c5cff" }
             return String(format: "#%02x%02x%02x", Int(rgb.redComponent * 255), Int(rgb.greenComponent * 255), Int(rgb.blueComponent * 255))
         }
-        let list: [[String: Any]] = events.events(matching: pred).sorted { $0.startDate < $1.startDate }.prefix(300).map { e in
+        let list: [[String: Any]] = events.events(matching: pred).sorted { $0.startDate < $1.startDate }.prefix(2000).map { e in
             ["id": e.eventIdentifier ?? "", "title": e.title ?? "", "start": f.string(from: e.startDate), "end": f.string(from: e.endDate), "allDay": e.isAllDay,
              "color": hex(e.calendar.cgColor), "calendar": e.calendar.title, "calId": e.calendar.calendarIdentifier,
              "editable": e.calendar.allowsContentModifications, "location": e.location ?? "", "notes": e.notes ?? ""]

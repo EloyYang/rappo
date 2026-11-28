@@ -1946,20 +1946,28 @@ class ContactDash {
     // 📋 PARA 할 일 보드: 시작 전·진행 중 노트와 진행 중 프로젝트
     this.paraBoard(r);
   }
-  async calendarCard(r) {
+  async calendarCard(r, before) {
     const P = this.plugin, app = this.app;
     let data = null;
     try { data = JSON.parse(await app.vault.adapter.read(`${P.manifest.dir}/calendar-events.json`)); } catch (e) { /* 아직 없음 */ }
-    const card = r.createDiv({ cls: 'cal-card' });
+    const card = createDiv({ cls: 'cal-card' });
+    if (before) r.insertBefore(card, before); else r.appendChild(card);
     const now = new Date(), td = today();
     const left = card.createDiv({ cls: 'cal-month' });
     const right = card.createDiv({ cls: 'cal-list' });
     const evs = ((data && data.events) || []).map((e) => ({ ...e, d: e.start.slice(0, 10), de: e.end.slice(0, 10), t: e.allDay ? '' : e.start.slice(11, 16), te: e.allDay ? '' : e.end.slice(11, 16) }));
     const hm = (t) => `${Number(t.slice(0, 2)) < 12 ? '오전' : '오후'} ${((Number(t.slice(0, 2)) + 11) % 12) + 1}${t.slice(3) === '00' ? '시' : ':' + t.slice(3)}`;
-    // 왼쪽: 이번 달 달력 (일~토, 6주)
-    const y = now.getFullYear(), m = now.getMonth();
+    // 왼쪽: 달력 (일~토, 6주) — ‹ › 로 달 넘기기, '오늘'로 이번 달
+    this.calOff = this.calOff || 0;
+    const base = new Date(now.getFullYear(), now.getMonth() + this.calOff, 1);
+    const y = base.getFullYear(), m = base.getMonth();
     const mh = left.createDiv({ cls: 'cal-mhead' });
+    const nav = (d) => { this.calOff += d; const nxt = card.nextSibling; card.remove(); this.calendarCard(r, nxt); };
+    const prev = mh.createEl('button', { cls: 'cal-nav', text: '‹', attr: { 'aria-label': '이전 달' } }); prev.onclick = () => nav(-1);
     mh.createSpan({ cls: 'cal-mtitle', text: `${y}년 ${m + 1}월` });
+    const next = mh.createEl('button', { cls: 'cal-nav', text: '›', attr: { 'aria-label': '다음 달' } }); next.onclick = () => nav(1);
+    if (this.calOff) { const tb = mh.createEl('button', { cls: 'cal-nav cal-today-btn', text: '오늘' }); tb.onclick = () => nav(-this.calOff); }
+    if (data && (this.calOff < -3 || this.calOff > 6)) mh.createSpan({ cls: 'rd-muted', text: ' · 이 달 일정은 아직 불러오지 않았어요 (3달 전~6달 뒤까지)' });
     if (data) { const ad = mh.createEl('a', { cls: 'rd-more', text: '＋ 일정' }); ad.onclick = () => new EventModal(P, null, td, data, () => this.render()).open(); }
     if (!data) mh.createSpan({ cls: 'rd-muted', text: ' · 캘린더 연결 전 (Rappo 설정 › 정리·AI·캘린더 › 접근 허용)' });
     const grid = left.createDiv({ cls: 'cal-grid' });
