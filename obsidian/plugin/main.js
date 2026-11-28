@@ -1797,7 +1797,8 @@ class ContactDash {
     let calToday = [];
     try {
       const cd = JSON.parse(await app.vault.adapter.read(`${P.manifest.dir}/calendar-events.json`));
-      calToday = (cd.events || []).filter((e) => e.start.slice(0, 10) === td && !/^✅ /.test(e.title || ''))
+      const hid = new Set(P.data.calHidden || []);   // 달력에서 끈 캘린더는 여기서도 빼기
+      calToday = (cd.events || []).filter((e) => !hid.has(e.calId) && e.start.slice(0, 10) === td && !/^✅ /.test(e.title || ''))
         .map((e) => ({ time: e.allDay ? '' : e.start.slice(11, 16), text: `📆 ${e.title}` }));
     } catch (e) { /* 캘린더 연결 전 */ }
     const todayItems = [
@@ -1983,8 +1984,7 @@ class ContactDash {
         text: hidden.size ? `캘린더 ${allCals.length - allCals.filter((c) => hidden.has(c.id)).length}/${allCals.length} ▾` : '캘린더 ▾' });
       const panel = pickWrap.createDiv({ cls: 'cal-pick' + (this.calPick ? ' is-open' : '') });
       pb.onclick = (e) => { e.stopPropagation(); this.calPick = !this.calPick; panel.toggleClass('is-open', this.calPick); };
-      const redraw = () => { const nxt = card.nextSibling; card.remove(); this.calendarCard(r, nxt); };
-      const save = async (ids) => { P.data.calHidden = [...ids]; await P.saveData(P.data); this.calPick = true; redraw(); };
+      const save = async (ids) => { P.data.calHidden = [...ids]; await P.saveData(P.data); this.calPick = true; this.render(); };   // 위 '오늘 일정' 칸도 함께
       let src = null;
       for (const c of allCals) {
         if ((c.source || '') !== src) { src = c.source || ''; if (src) panel.createDiv({ cls: 'cal-pick-src', text: src }); }
