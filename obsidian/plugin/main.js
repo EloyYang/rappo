@@ -2784,12 +2784,14 @@ module.exports = class RappoSearch extends Plugin {
       if (tags.includes('할일') || f.path === this.tasks.path) syncSoon();
     }));
     // 대시보드 노트(PARA 대시보드·연락 대시보드)는 열 때 늘 읽기 모드로 — 편집이 필요하면 그때 전환
+    // 읽기 모드로 고정할 노트: PARA 대시보드 · 라포 홈 · 소비 대시보드 (+ 속성 view: reading 인 노트)
     const isDash = (f) => {
-      const fm = f && this.app.metadataCache.getFileCache(f)?.frontmatter;
-      if (!fm) return false;
-      const cls = [].concat(fm.cssclasses || fm.cssclass || []).map(String);
-      return cls.includes('pd-wide') || cls.includes('rappo-dash') || fm.view === 'reading';
+      if (!f) return false;
+      const fixed = ['PARA 대시보드.md', '대시보드.md', `${BASE}/라포 홈.md`, `${BASE}/통화기록 대시보드.md`, `${BASE}/소비/소비 대시보드.md`];
+      if (fixed.includes(f.path)) return true;
+      return this.app.metadataCache.getFileCache(f)?.frontmatter?.view === 'reading';
     };
+    const forcedPreview = new WeakSet();   // 우리가 읽기 모드로 바꾼 탭
     // 탭마다 '이 파일을 처음 연 순간'에만 읽기 모드로 바꾼다 (그 뒤 직접 편집 모드로 바꾸면 그대로 둠)
     const forced = new WeakMap();
     // 탭의 '보기 상태'로 판단 — 옵시디언이 아직 불러오지 않은 뒤쪽 탭(지연 로딩)도 함께 처리
@@ -2800,9 +2802,18 @@ module.exports = class RappoSearch extends Plugin {
         if (!path || forced.get(leaf) === path) return;
         const f = this.app.vault.getAbstractFileByPath(path);
         if (!(f instanceof TFile) || !this.app.metadataCache.getFileCache(f)) return;   // 아직 색인 전이면 다음 기회에
-        // 대시보드가 아니거나 이미 읽기 모드인 걸 '확인'했을 때만 끝난 것으로 표시
-        // (옵시디언이 탭을 연 직후 편집 모드를 다시 덮어쓰는 경우가 있어, 확인될 때까지 몇 번 더 본다)
-        if (!isDash(f) || st.state.mode === 'preview') { forced.set(leaf, path); return; }
+        // 대시보드에서 같은 탭으로 다른 노트를 열면, 우리가 바꿔 둔 읽기 모드를 편집 모드로 되돌린다
+        if (!isDash(f)) {
+          forced.set(leaf, path);
+          if (forcedPreview.has(leaf) && st.state.mode === 'preview') {
+            forcedPreview.delete(leaf);
+            leaf.setViewState({ ...st, state: { ...st.state, mode: 'source' } });
+          } else forcedPreview.delete(leaf);
+          return;
+        }
+        // 대시보드: 읽기 모드인 걸 '확인'했을 때만 끝난 것으로 (옵시디언이 편집 모드로 덮어쓰는 경우가 있어 몇 번 더 본다)
+        forcedPreview.add(leaf);
+        if (st.state.mode === 'preview') { forced.set(leaf, path); return; }
         leaf.setViewState({ ...st, state: { ...st.state, mode: 'preview' } });
       });
     };
@@ -2811,7 +2822,8 @@ module.exports = class RappoSearch extends Plugin {
     this.registerEvent(this.app.workspace.on('active-leaf-change', later));
     this.registerEvent(this.app.workspace.on('layout-change', later));
     this.registerEvent(this.app.metadataCache.on('resolved', later));
-    this.app.workspace.onLayoutReady(later);
+    // 옵시디언을 켤 때: 대시보드가 아닌데 읽기 모드로 남아 있는 탭은 편집 모드로
+    this.app.workspace.onLayoutReady(() => { this.app.workspace.iterateAllLeaves((l) => forcedPreview.add(l)); later(); });
     this.registerMarkdownCodeBlockProcessor('회의', (src, el, ctx) => ctx.addChild(new MeetingsChild(this, el, ctx.sourcePath)));
     this.registerMarkdownCodeBlockProcessor('회의할일', (src, el, ctx) => ctx.addChild(new MeetingTasksChild(this, el, ctx.sourcePath)));
     // 프로젝트·영역 노트 오른쪽 위에 🎙 새 회의 버튼
