@@ -1834,6 +1834,8 @@ class ContactDash {
     };
     const sb = act.createEl('button', { text: this.searchOpen ? '🔍 검색 닫기' : '🔍 대화 검색', cls: this.searchOpen ? 'is-active' : '' });
     sb.onclick = () => { this.searchOpen = !this.searchOpen; this.render(); };
+    const aib = act.createEl('button', { text: '✨ AI', attr: { 'aria-label': '로컬 AI: 노트에게 묻기 · 노트 쓰기' } });
+    aib.onclick = () => P.openAI && P.openAI();
 
     // 🔍 대화 검색: 버튼을 눌렀을 때만 이 자리에
     if (this.searchOpen) {
@@ -3232,7 +3234,7 @@ module.exports = class RappoSearch extends Plugin {
     this.ai = new LocalAI(this);
     this.finder = new NoteFinder(this);
     this.registerView(AI_VIEW, (leaf) => new AIView(leaf, this));
-    const openAI = async (mode) => {
+    const openAI = this.openAI = async (mode) => {
       let leaf = this.app.workspace.getLeavesOfType(AI_VIEW)[0];
       if (!leaf) { leaf = this.app.workspace.getRightLeaf(false); await leaf.setViewState({ type: AI_VIEW, active: true }); }
       this.app.workspace.revealLeaf(leaf);
