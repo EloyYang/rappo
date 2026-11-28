@@ -416,3 +416,9 @@ div.ks-section-head { cursor: default; }
 .sp-row.is-canceled .sp-what > span:first-child { color: var(--text-muted); }
 .sp-canceled { margin-left: 6px; font-size: 11px; padding: 0 6px; border-radius: 8px; background: color-mix(in srgb, #ef4444 12%, transparent); color: #ef4444; white-space: nowrap; }
 .sp-canceled.is-alone { background: var(--background-modifier-hover); color: var(--text-faint); }
+
+/* v28.6 AI: 모델 고르기 */
+.rai-model { align-items: center; }
+.rai-model button { flex: none; font-size: 12px; height: auto; padding: 3px 10px; }
+.rai-title, .rai-hbtn, .rai-state { white-space: nowrap; }
+.rai-head { flex-wrap: wrap; row-gap: 4px; }

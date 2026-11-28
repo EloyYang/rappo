@@ -176,11 +176,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var calDebounce: Timer?
     var dayItems: [NSMenuItem] = []
 
+    var setupWC: SetupWindow?
+
+    // 코드 폴더: install.sh 로 만든 앱은 Info.plist 의 CNCodeDir, dmg 로 받은 앱은 앱 안의 코드를
+    // ~/Library/Application Support/Rappo/code 로 옮겨 쓴다 (새 버전 앱이면 코드만 바꾸고 config.sh·state 는 그대로)
+    static var supportCode: String {
+        ProcessInfo.processInfo.environment["RAPPO_SUPPORT_DIR"] ?? (NSHomeDirectory() + "/Library/Application Support/Rappo/code")
+    }
+    func resolveCodeDir() -> String {
+        let baked = Bundle.main.infoDictionary?["CNCodeDir"] as? String ?? ""
+        let fm = FileManager.default
+        if !baked.isEmpty, fm.fileExists(atPath: baked + "/run.sh") { return baked }
+        guard let res = Bundle.main.resourcePath, fm.fileExists(atPath: res + "/code/run.sh") else { return baked }
+        let dst = AppDelegate.supportCode
+        let stamp = { (d: String) in (try? String(contentsOfFile: d + "/.bundle-stamp", encoding: .utf8)) ?? "" }
+        if stamp(res + "/code") != stamp(dst) || !fm.fileExists(atPath: dst + "/run.sh") {
+            try? fm.createDirectory(atPath: dst, withIntermediateDirectories: true)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/rsync")
+            p.arguments = ["-a", "--delete", "--exclude", "config.sh", "--exclude", "state/", res + "/code/", dst + "/"]
+            try? p.run(); p.waitUntilExit()
+        }
+        return dst
+    }
+
     func applicationDidFinishLaunching(_ n: Notification) {
-        codeDir = Bundle.main.infoDictionary?["CNCodeDir"] as? String ?? ""
+        // dmg 안에서 바로 연 경우: 응용 프로그램 폴더로 옮기라고 안내
+        if Bundle.main.bundlePath.hasPrefix("/Volumes/"), Bundle.main.infoDictionary?["CNCodeDir"] == nil {
+            let a = NSAlert()
+            a.messageText = "Rappo 를 응용 프로그램 폴더로 옮겨 주세요"
+            a.informativeText = "디스크 이미지(dmg) 창에서 Rappo 아이콘을 'Applications' 폴더로 끌어다 놓은 뒤, 응용 프로그램 폴더에서 Rappo 를 열어 주세요."
+            NSApp.activate(ignoringOtherApps: true)
+            a.runModal()
+            NSApp.terminate(nil)
+            return
+        }
+        codeDir = resolveCodeDir()
         s = Settings(codeDir: codeDir)
         buildMenu()
         setIcon(busy: false)
+        // 아직 설치 전(config.sh 없음)이면 설치 창부터
+        if !FileManager.default.fileExists(atPath: codeDir + "/config.sh") {
+            statusLine.title = "● 설치가 필요해요 — Rappo 를 다시 열면 설치 창이 떠요"
+            openSetup()
+            return
+        }
+        startServices()
+    }
+
+    // AI·보기만 맥에서 앱을 열면: 할 일이 없다고 알려 주고 끈다 (정리하기로 바꾸려면 다시 설치)
+    func viewerNotice() {
+        let a = NSAlert()
+        a.messageText = "이 맥은 'AI·보기만'으로 설치돼 있어요"
+        a.informativeText = "옵시디언의 Rappo AI 는 이 맥의 로컬 모델로 돌아가고, 녹음·카톡 정리는 다른 맥이 해요. 그래서 이 앱은 켜 둘 필요가 없어요.\n\n이 맥에서도 정리하려면 '정리하기로 바꾸기'를 눌러 다시 설치해 주세요 (두 맥이 함께 정리하면 할 일·일정이 겹칠 수 있어요)."
+        a.addButton(withTitle: "닫기")
+        a.addButton(withTitle: "정리하기로 바꾸기…")
+        NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertSecondButtonReturn {
+            try? FileManager.default.removeItem(atPath: codeDir + "/config.sh")
+            s = Settings(codeDir: codeDir)
+            openSetup()
+        } else { NSApp.terminate(nil) }
+    }
+
+    func openSetup() {
+        if setupWC == nil { setupWC = SetupWindow(codeDir: codeDir, app: self) }
+        NSApp.activate(ignoringOtherApps: true)
+        setupWC?.showWindow(nil)
+        setupWC?.window?.makeKeyAndOrderFront(nil)
+    }
+    // 설치 창에서 설치를 마치면
+    func setupDone() {
+        s = Settings(codeDir: codeDir)
+        startServices()
+    }
+
+    var isViewer: Bool { s.base["RAPPO_ROLE"] == "viewer" }
+
+    func startServices() {
+        // AI·보기만으로 설치한 맥: 녹음·카톡 정리와 캘린더 반영은 다른 맥이 한다 (겹치지 않게 여기서는 아무것도 돌리지 않음)
+        if isViewer {
+            statusLine.title = "● AI·보기만 — 녹음·카톡 정리는 다른 맥에서 해요"
+            if setupWC == nil { viewerNotice() }
+            return
+        }
         applySettings()
         // 시작 직후 한 번 (동기화가 붙을 시간을 조금 준다)
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.request(["--kakao-db"]) }
@@ -197,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // 이미 실행 중일 때 앱을 다시 열면(Finder 더블클릭 등) 설정 창
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !FileManager.default.fileExists(atPath: codeDir + "/config.sh") { openSetup(); return false }
         openSettings()
         return false
     }
@@ -392,6 +472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: 실행
 
     func request(_ args: [String], manual: Bool = false) {
+        if isViewer { alert("이 맥은 AI·보기만이에요", "녹음·카톡 정리는 다른 맥에서 해요. 이 맥에서도 정리하려면 Rappo 를 다시 설치하며 '이 맥에서 정리하기'를 골라 주세요."); return }
         var args = args
         // 정리 시간: 정해진 시간 밖이면 미루거나(모두) AI 만 미룬다. 직접 누른 '지금 정리하기'는 바로.
         if !manual && !s.inWindow() && !args.contains("--catch-up") && !args.contains("--setup-obsidian") {
@@ -1156,6 +1237,321 @@ final class SettingsWindow: NSWindowController {
             s.reset(); load(); app?.applySettings()
         }
     }
+}
+
+
+// MARK: - 처음 설치 창 (dmg 로 받은 앱): 몇 가지를 고르면 install.sh 를 대신 돌린다
+
+final class SetupWindow: NSWindowController {
+    let codeDir: String
+    weak var app: AppDelegate?
+    let brewState = NSTextField(wrappingLabelWithString: "")
+    let brewBtn = NSButton(title: "Homebrew 설치하기…", target: nil, action: nil)
+    let recField = SettingsWindow.pathLabel()
+    let vaultPopup = NSPopUpButton()
+    let baseField = NSTextField()
+    let paraCheck = NSButton(checkboxWithTitle: "PARA 노트 정리 방식도 함께 (프로젝트·영역 폴더, 템플릿, PARA 대시보드)", target: nil, action: nil)
+    let roleFull = NSButton(radioButtonWithTitle: "이 맥에서 정리하기 — 통화 녹음·카카오톡을 받아 적고 할 일·캘린더까지", target: nil, action: nil)
+    let roleView = NSButton(radioButtonWithTitle: "AI·보기만 — 다른 맥에서 이미 정리하고 있어요 (같은 볼트를 동기화해서 봐요)", target: nil, action: nil)
+    let aiPopup = NSPopUpButton()
+    var fullOnly: [NSView] = []
+    static let models: [(id: String, title: String, ram: Int)] = [
+        ("", "설치 안 함", 0),
+        ("mlx-community/Qwen3.5-4B-MLX-4bit", "Qwen3.5 4B — 빠르고 가벼워요 (약 3GB, 메모리 8GB 이상)", 8),
+        ("mlx-community/Qwen3.5-9B-MLX-4bit", "Qwen3.5 9B — 더 정확해요 (약 6GB, 메모리 16GB 이상)", 16),
+    ]
+    static var ramGB: Int { Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824).rounded()) }
+    let convertCheck = NSButton(checkboxWithTitle: "이미 있는 녹취도 모두 받아 적기 (오래 걸릴 수 있어요)", target: nil, action: nil)
+    let installBtn = NSButton(title: "설치", target: nil, action: nil)
+    let stepLabel = NSTextField(labelWithString: "")
+    let spinner = NSProgressIndicator()
+    let logView = NSTextView()
+    var form: NSView!
+    var progress: NSView!
+    var done: NSView!
+    var vaults: [String] = []
+    var proc: Process?
+
+    init(codeDir: String, app: AppDelegate) {
+        self.codeDir = codeDir
+        self.app = app
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 520), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "Rappo 설치"
+        w.isReleasedWhenClosed = false
+        super.init(window: w)
+        build()
+        w.center()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func label(_ t: String, bold: Bool = false, size: CGFloat = NSFont.systemFontSize) -> NSTextField {
+        let f = NSTextField(wrappingLabelWithString: t)
+        f.font = bold ? .boldSystemFont(ofSize: size) : .systemFont(ofSize: size)
+        f.preferredMaxLayoutWidth = 540
+        return f
+    }
+    func note(_ t: String) -> NSTextField { let f = SettingsWindow.note(t); f.preferredMaxLayoutWidth = 540; return f }
+    func btn(_ t: String, _ sel: Selector) -> NSButton { let b = NSButton(title: t, target: self, action: sel); b.bezelStyle = .rounded; return b }
+    func row(_ v: [NSView]) -> NSStackView { let r = NSStackView(views: v); r.spacing = 8; r.alignment = .centerY; return r }
+    func stack(_ v: [NSView]) -> NSView {
+        let st = NSStackView(views: v)
+        st.orientation = .vertical; st.alignment = .leading; st.spacing = 10
+        st.edgeInsets = NSEdgeInsets(top: 22, left: 26, bottom: 22, right: 26)
+        return st
+    }
+
+    // 화면 바꾸기: 창 크기를 내용에 맞춘다 (위쪽 위치는 그대로)
+    func show(_ v: NSView) {
+        guard let w = window else { return }
+        w.contentView = v
+        v.layoutSubtreeIfNeeded()
+        let size = NSSize(width: 600, height: max(200, v.fittingSize.height))
+        var f = w.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+        f.origin = NSPoint(x: w.frame.minX, y: w.frame.maxY - f.height)
+        w.setFrame(f, display: true, animate: false)
+    }
+    var brew: String? { ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { FileManager.default.isExecutableFile(atPath: $0) } }
+
+    func build() {
+        // 1) 고르기
+        let home = NSHomeDirectory()
+        var rec = home + "/Documents/Rappo/녹취"
+        if let cs = try? FileManager.default.contentsOfDirectory(atPath: home + "/Library/CloudStorage") {
+            for c in cs where c.hasPrefix("SynologyDrive-") {
+                let d = home + "/Library/CloudStorage/" + c + "/1.Short/녹취"
+                if FileManager.default.fileExists(atPath: d) { rec = d; break }
+            }
+        }
+        recField.stringValue = rec
+        recField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        vaults = SetupWindow.obsidianVaults()
+        vaultPopup.addItems(withTitles: vaults.isEmpty ? ["(옵시디언 볼트가 없어요)"] : vaults.map { ($0 as NSString).lastPathComponent + "  —  " + $0 })
+        vaultPopup.addItem(withTitle: "다른 폴더 고르기…")
+        vaultPopup.target = self; vaultPopup.action = #selector(vaultChanged)
+        vaultPopup.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        baseField.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        brewBtn.target = self; brewBtn.action = #selector(installBrew); brewBtn.bezelStyle = .rounded
+        installBtn.target = self; installBtn.action = #selector(install); installBtn.bezelStyle = .rounded; installBtn.keyEquivalent = "\r"
+        for r in [roleFull, roleView] { r.target = self; r.action = #selector(roleChanged) }
+        roleFull.state = .on
+        let ram = SetupWindow.ramGB
+        aiPopup.addItems(withTitles: SetupWindow.models.map { $0.title })
+        aiPopup.selectItem(at: ram >= 16 ? 2 : 1)   // 이 맥 메모리에 맞는 것을 미리 골라 둠
+        let recTitle = label("통화 녹음 폴더", bold: true)
+        let recRow = row([recField, btn("고르기…", #selector(pickRec))])
+        let recNote = note("휴대폰 통화 녹음이 동기화되는 폴더 (파일 이름 예: 홍길동_01012345678_20261126143000.m4a)")
+        fullOnly = [recTitle, recRow, recNote, convertCheck, paraCheck]
+        form = stack([
+            label("Rappo(라포) 설치", bold: true, size: 17),
+            note("통화 녹음과 카카오톡 대화를 맥 안에서 받아 적고, 옵시디언에 사람별로 정리해요. 몇 가지만 고르면 나머지는 알아서 설치해요."),
+            label("준비물", bold: true), row([brewState, brewBtn]),
+            label("이 맥에서 할 일", bold: true), roleFull, roleView,
+            recTitle, recRow, recNote, convertCheck,
+            label("옵시디언 볼트", bold: true), vaultPopup,
+            row([NSTextField(labelWithString: "볼트 안 저장 폴더"), baseField]), paraCheck,
+            label("로컬 AI 모델", bold: true), aiPopup,
+            note("이 맥 메모리 \(ram)GB — 맞는 모델을 미리 골라 뒀어요. 나중에 옵시디언 Rappo AI 의 🧠 모델에서 바꿀 수 있어요."),
+            note("이미 있는 노트는 지우거나 덮어쓰지 않아요. 처음 설치는 인터넷 속도에 따라 10~30분쯤 걸려요."),
+            row([NSView(), installBtn]),
+        ])
+        // 2) 설치 중
+        spinner.style = .spinning; spinner.controlSize = .small
+        logView.isEditable = false
+        logView.font = .monospacedSystemFont(ofSize: 10.5, weight: .regular)
+        logView.textContainerInset = NSSize(width: 6, height: 6)
+        let sc = NSScrollView(); sc.documentView = logView; sc.hasVerticalScroller = true; sc.borderType = .bezelBorder
+        logView.autoresizingMask = [.width]
+        logView.minSize = NSSize(width: 0, height: 0); logView.maxSize = NSSize(width: 1e7, height: 1e7)
+        logView.isVerticallyResizable = true
+        sc.translatesAutoresizingMaskIntoConstraints = false
+        sc.widthAnchor.constraint(equalToConstant: 548).isActive = true
+        sc.heightAnchor.constraint(equalToConstant: 360).isActive = true
+        stepLabel.font = .boldSystemFont(ofSize: 13)
+        progress = stack([label("설치하는 중…", bold: true, size: 17), row([spinner, stepLabel]), sc,
+                          note("창을 닫아도 설치는 계속돼요. 끝나면 알려 드릴게요.")])
+        refreshBrew()
+        vaultChanged()
+        show(form)
+        // 시험용: RAPPO_SNAPSHOT_DIR 가 있으면 화면을 그림으로 남기고, RAPPO_TEST_AUTOINSTALL 이면 설치 버튼을 누른다
+        if snapDir != nil {
+            window?.appearance = NSAppearance(named: .aqua)   // 그림으로 남길 때는 밝은 화면으로
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                if ProcessInfo.processInfo.environment["RAPPO_TEST_VIEWER"] != nil, let r = self?.roleView { self?.roleChanged(r) }
+                self?.snap("1-form")
+                if ProcessInfo.processInfo.environment["RAPPO_TEST_AUTOINSTALL"] != nil { self?.install() }
+            }
+        }
+    }
+    var snapDir: String? { ProcessInfo.processInfo.environment["RAPPO_SNAPSHOT_DIR"] }
+    func snap(_ name: String) {
+        guard let dir = snapDir, let v = window?.contentView else { return }
+        v.layoutSubtreeIfNeeded()
+        guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+        v.cacheDisplay(in: v.bounds, to: rep)
+        let img = NSImage(size: v.bounds.size)
+        img.lockFocus()
+        let dark = v.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        NSColor(white: dark ? 0.17 : 0.93, alpha: 1).setFill()
+        v.bounds.fill()
+        rep.draw(in: v.bounds)
+        img.unlockFocus()
+        if let t = img.tiffRepresentation, let r = NSBitmapImageRep(data: t) {
+            try? r.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir + "/" + name + ".png"))
+        }
+    }
+
+    static func obsidianVaults() -> [String] {
+        let p = NSHomeDirectory() + "/Library/Application Support/obsidian/obsidian.json"
+        guard let d = FileManager.default.contents(atPath: p),
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let vs = j["vaults"] as? [String: [String: Any]] else { return [] }
+        return vs.values.compactMap { $0["path"] as? String }.filter { FileManager.default.fileExists(atPath: $0) }.sorted()
+    }
+    var vaultPath: String {
+        let i = vaultPopup.indexOfSelectedItem
+        if i >= 0 && i < vaults.count { return vaults[i] }
+        return ""
+    }
+    @objc func vaultChanged() {
+        if vaultPopup.indexOfSelectedItem == vaultPopup.numberOfItems - 1 {
+            let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false
+            p.message = "옵시디언 볼트 폴더를 고르세요"
+            if p.runModal() == .OK, let u = p.url {
+                vaults.append(u.path)
+                vaultPopup.insertItem(withTitle: u.lastPathComponent + "  —  " + u.path, at: vaults.count - 1)
+                if vaults.count == 1, vaultPopup.itemTitles.first?.hasPrefix("(옵시디언") == true { vaultPopup.removeItem(at: 0); vaults = [u.path] }
+                vaultPopup.selectItem(at: vaults.count - 1)
+            } else { vaultPopup.selectItem(at: 0) }
+        }
+        let v = vaultPath, fm = FileManager.default
+        let para = fm.fileExists(atPath: v + "/1. Projects") || fm.fileExists(atPath: v + "/.obsidian/plugins/para-dashboard")
+        baseField.stringValue = fm.fileExists(atPath: v + "/2. Areas") ? "2. Areas/통화기록" : "통화기록"
+        paraCheck.isHidden = para || v.isEmpty || roleView.state == .on
+        paraCheck.state = .off
+    }
+    @objc func roleChanged(_ sender: NSButton) {
+        let viewer = sender === roleView
+        roleFull.state = viewer ? .off : .on
+        roleView.state = viewer ? .on : .off
+        for v in fullOnly { v.isHidden = viewer }
+        if !viewer { vaultChanged() }
+        if window?.contentView === form { show(form) }
+    }
+    @objc func pickRec() {
+        let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
+        p.message = "휴대폰 통화 녹음 파일이 모이는 폴더를 고르세요"
+        if p.runModal() == .OK, let u = p.url { recField.stringValue = u.path }
+    }
+    func refreshBrew() {
+        let ok = brew != nil
+        brewState.stringValue = ok ? "✅ Homebrew 가 있어요 (음성 도구를 설치하는 데 써요)" : "⚠️ Homebrew 가 필요해요. 오른쪽 버튼을 누르면 터미널에서 설치가 시작돼요 (맥 암호를 물어요). 끝나면 이 창으로 돌아와 주세요."
+        brewState.preferredMaxLayoutWidth = 380
+        brewBtn.isHidden = ok
+        installBtn.isEnabled = ok
+    }
+    @objc func installBrew() {
+        // 터미널에서 공식 설치 명령을 실행하는 .command 파일을 연다 (암호 입력은 사용자가 직접)
+        let f = NSTemporaryDirectory() + "rappo-homebrew.command"
+        let sh = "#!/bin/bash\necho 'Homebrew 를 설치해요. 맥 암호를 물으면 입력해 주세요.'\n/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"\necho; echo '끝났어요. Rappo 설치 창으로 돌아가 주세요.'\n"
+        try? sh.write(toFile: f, atomically: true, encoding: .utf8)
+        chmod(f, 0o755)
+        NSWorkspace.shared.open(URL(fileURLWithPath: f))
+        // 설치가 끝났는지 몇 초마다 확인
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] t in
+            guard let self = self else { t.invalidate(); return }
+            if self.brew != nil { t.invalidate(); self.refreshBrew() }
+        }
+    }
+
+    @objc func install() {
+        guard brew != nil else { return }
+        let vault = vaultPath
+        show(progress)
+        spinner.startAnimation(nil)
+        stepLabel.stringValue = "준비 중"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [codeDir + "/install.sh"]
+        p.currentDirectoryURL = URL(fileURLWithPath: codeDir)
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["RAPPO_YES"] = "1"; env["RAPPO_FROM_APP"] = "1"
+        env["RAPPO_ANS_REC"] = recField.stringValue
+        env["RAPPO_ANS_CONVERT"] = convertCheck.state == .on ? "y" : "n"
+        let m = SetupWindow.models[max(0, aiPopup.indexOfSelectedItem)]
+        env["RAPPO_ANS_AI"] = m.id.isEmpty ? "n" : "y"
+        if !m.id.isEmpty { env["RAPPO_ANS_AI_MODEL"] = m.id }
+        if roleView.state == .on { env["RAPPO_ROLE"] = "viewer" }
+        env["RAPPO_ANS_PARA"] = paraCheck.state == .on && !paraCheck.isHidden ? "y" : "n"
+        if !vault.isEmpty { env["RAPPO_ANS_VAULT"] = vault }
+        env["RAPPO_ANS_BASE"] = baseField.stringValue.trimmingCharacters(in: .whitespaces)
+        p.environment = env
+        let pipe = Pipe()
+        p.standardOutput = pipe; p.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let d = h.availableData
+            guard !d.isEmpty, let t = String(data: d, encoding: .utf8) else { return }
+            DispatchQueue.main.async { self?.append(t) }
+        }
+        p.terminationHandler = { [weak self] pr in
+            DispatchQueue.main.async { pipe.fileHandleForReading.readabilityHandler = nil; self?.finished(pr.terminationStatus) }
+        }
+        do { try p.run(); proc = p } catch { append("실행 실패: \(error.localizedDescription)\n"); finished(1) }
+    }
+    func append(_ t: String) {
+        let clean = t.replacingOccurrences(of: "\u{1B}\\[[0-9;]*m", with: "", options: .regularExpression)
+        for l in clean.split(separator: "\n") where l.hasPrefix("== ") { stepLabel.stringValue = l.replacingOccurrences(of: "=", with: "").trimmingCharacters(in: .whitespaces) }
+        logView.textStorage?.append(NSAttributedString(string: clean, attributes: [.font: logView.font!, .foregroundColor: NSColor.textColor]))
+        logView.scrollToEndOfDocument(nil)
+        if snapDir != nil, clean.contains("== 3/5") { DispatchQueue.main.async { [weak self] in self?.snap("2-progress") } }
+    }
+    func finished(_ status: Int32) {
+        spinner.stopAnimation(nil)
+        proc = nil
+        let ok = status == 0 && FileManager.default.fileExists(atPath: codeDir + "/config.sh")
+        if !ok {
+            stepLabel.stringValue = "설치를 마치지 못했어요 — 아래 기록을 확인하고 다시 시도해 주세요"
+            let again = btn("다시 시도", #selector(retry))
+            (progress as? NSStackView)?.addArrangedSubview(again)
+            NSApp.activate(ignoringOtherApps: true); window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        app?.setupDone()
+        if app?.isViewer == true {
+            done = stack([
+                label("✅ 설치를 마쳤어요 (AI·보기만)", bold: true, size: 17),
+                note("이 맥에서는 옵시디언의 Rappo AI 가 이 맥의 로컬 모델로 돌아가요. 녹음·카톡 정리와 캘린더 반영은 다른 맥이 계속 해요."),
+                note("옵시디언을 ⌘Q 로 껐다가 다시 열고, 라포 홈의 ✨ AI 를 눌러 보세요. 모델은 🧠 에서 바꿀 수 있어요."),
+                note("이 앱은 켜 둘 필요가 없어서 창을 닫으면 꺼져요."),
+                row([btn("라포 홈 열기", #selector(openHome)), btn("닫기", #selector(quitApp))]),
+            ])
+            show(done)
+            NSApp.activate(ignoringOtherApps: true); window?.makeKeyAndOrderFront(nil)
+            if snapDir != nil { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.snap("3-done") } }
+            return
+        }
+        done = stack([
+            label("✅ 설치를 마쳤어요", bold: true, size: 17),
+            note("메뉴막대의 겹친 원 아이콘이 Rappo 예요. 아래 세 가지만 해 주세요."),
+            label("1. 전체 디스크 접근 권한", bold: true),
+            note("카카오톡 대화와 네트워크 드라이브의 녹음을 읽는 데 필요해요. 열리는 설정 창에서 '+' 를 눌러 응용 프로그램의 Rappo 를 추가하고 켜 주세요."),
+            btn("전체 디스크 접근 권한 열기", #selector(openFDA)),
+            label("2. 로그인할 때 자동 실행", bold: true),
+            btn("로그인 시 자동 실행 켜기", #selector(login)),
+            label("3. 옵시디언에서 라포 홈 열기", bold: true),
+            note("옵시디언이 '플러그인을 신뢰할지' 물으면 허용해 주세요."),
+            row([btn("라포 홈 열기", #selector(openHome)), btn("닫기", #selector(closeWin))]),
+        ])
+        show(done)
+        NSApp.activate(ignoringOtherApps: true); window?.makeKeyAndOrderFront(nil)
+        if snapDir != nil { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.snap("3-done") } }
+    }
+    @objc func retry() { logView.string = ""; show(form) }
+    @objc func openFDA() { app?.openPrivacy() }
+    @objc func login() { if app?.loginEnabled == false { app?.toggleLogin() } }
+    @objc func openHome() { app?.openDashboard() }
+    @objc func closeWin() { close() }
+    @objc func quitApp() { NSApp.terminate(nil) }
 }
 
 let app = NSApplication.shared

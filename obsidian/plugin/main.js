@@ -2850,9 +2850,42 @@ const AI_MODEL = 'mlx-community/Qwen3.5-4B-MLX-4bit';
 const AI_URL = 'http://127.0.0.1:8765';
 const STOP_WORDS = new Set(['노트', '내용', '관련', '정리', '알려줘', '알려', '줘', '뭐야', '뭐', '어떻게', '있어', '있나', '찾아줘', '찾아', '대해', '대한', '무엇', '언제', '어디', '누구', '해줘', '써줘', '만들어줘', '작성', '작성해줘', '최근', '요즘', '지난', '오늘', '어제', '대화', '통화', '얘기', '이야기', '요약', '요약해줘', '내용을', '했던', '했지', '나눈']);
 
+// 고를 수 있는 로컬 모델 (MLX). ram: 이 맥 메모리가 이만큼(GB) 이상일 때 권함
+const AI_MODELS = [
+  { id: 'mlx-community/Qwen3.5-4B-MLX-4bit', name: 'Qwen3.5 4B', size: 3.1, ram: 8, note: '빠르고 가벼워요 (기본)' },
+  { id: 'mlx-community/Qwen3.5-9B-MLX-4bit', name: 'Qwen3.5 9B', size: 6.0, ram: 16, note: '더 정확하게 답하고 글도 더 잘 써요 · 약 2배 느려요' },
+];
+const AI_MODEL_KEY = 'rappo-ai-model';   // 맥마다 따로 (볼트 동기화로 다른 맥에 넘어가지 않게 localStorage)
+
 class LocalAI {
-  constructor(plugin) { this.plugin = plugin; this.proc = null; this.idle = null; }
-  get model() { return this.plugin.data.aiModel || AI_MODEL; }
+  constructor(plugin) { this.plugin = plugin; this.proc = null; this.idle = null; this.procModel = ''; }
+  static hfDir(id) { const os = require('os'), path = require('path'); return path.join(process.env.HF_HOME || path.join(os.homedir(), '.cache/huggingface'), 'hub', 'models--' + id.replace('/', '--')); }
+  static has(id) {
+    try { const fs = require('fs'), path = require('path'), d = path.join(LocalAI.hfDir(id), 'snapshots'); return fs.readdirSync(d).some((x) => fs.readdirSync(path.join(d, x)).some((f) => f.endsWith('.safetensors'))); } catch (e) { return false; }
+  }
+  static ramGB() { try { return Math.round(require('os').totalmem() / 1024 ** 3); } catch (e) { return 8; } }
+  // 고른 모델 > (안 골랐으면) 받아 둔 것 중 이 맥 메모리에 맞는 가장 좋은 것 > 기본
+  get model() {
+    const pick = window.localStorage.getItem(AI_MODEL_KEY);
+    if (pick) return pick;
+    const ram = LocalAI.ramGB();
+    const ok = AI_MODELS.filter((m) => ram >= m.ram && LocalAI.has(m.id));
+    return ok.length ? ok[ok.length - 1].id : this.plugin.data.aiModel || AI_MODEL;
+  }
+  setModel(id) { window.localStorage.setItem(AI_MODEL_KEY, id); if (this.procModel !== id) this.stop(); }
+  // 모델 받기 (처음 한 번, 인터넷 필요). onPct(0~100)
+  download(id, onPct) {
+    const os = require('os'), fs = require('fs'), path = require('path');
+    const py = path.join(os.homedir(), '.venvs/mlx-llm/bin/python');
+    if (!fs.existsSync(py)) return Promise.reject(new Error('로컬 AI(MLX)가 설치돼 있지 않아요. Rappo 설치에서 로컬 AI 를 함께 설치해 주세요.'));
+    const want = (AI_MODELS.find((m) => m.id === id)?.size || 3) * 1e9;
+    const du = (d) => { let n = 0; try { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); n += f.isDirectory() ? du(p) : f.isFile() ? fs.statSync(p).size : 0; } } catch (e) { /* */ } return n; };
+    return new Promise((res, rej) => {
+      const pr = require('child_process').spawn(py, ['-c', `from huggingface_hub import snapshot_download as s; s(${JSON.stringify(id)})`], { stdio: 'ignore' });
+      const t = setInterval(() => onPct && onPct(Math.min(99, Math.round(du(path.join(LocalAI.hfDir(id), 'blobs')) / want * 100))), 1500);
+      pr.on('exit', (c) => { clearInterval(t); c === 0 && LocalAI.has(id) ? res() : rej(new Error('모델을 받지 못했어요 (인터넷 연결을 확인해 주세요)')); });
+    });
+  }
   async up() {
     try { const r = await requestUrl({ url: AI_URL + '/v1/models', throw: false }); return r.status === 200; } catch (e) { return false; }
   }
@@ -2861,7 +2894,9 @@ class LocalAI {
     const os = require('os'), fs = require('fs'), path = require('path');
     const py = path.join(os.homedir(), '.venvs/mlx-llm/bin/python');
     if (!fs.existsSync(py)) throw new Error('로컬 모델(MLX)이 설치돼 있지 않아요. Rappo 설정 › 정리·AI·캘린더에서 로컬 모델을 켜 주세요.');
+    if (!LocalAI.has(this.model)) throw new Error(`이 맥에 '${(AI_MODELS.find((m) => m.id === this.model) || { name: this.model }).name}' 모델이 아직 없어요. 위쪽 🧠 모델에서 받아 주세요.`);
     if (!this.proc) {
+      this.procModel = this.model;
       status && status('로컬 모델을 켜는 중… (처음 한 번 10초쯤)');
       this.proc = require('child_process').spawn(py, ['-m', 'mlx_lm.server', '--model', this.model, '--port', '8765',
         '--chat-template-args', '{"enable_thinking": false}'], { stdio: 'ignore', env: { ...process.env, HF_HUB_OFFLINE: '1' } });
@@ -3198,12 +3233,16 @@ class AIView extends ItemView {
     this.dot = head.createSpan({ cls: 'rai-state' });
     this.plugin.ai.up().then((u) => { this.dot.setText(u ? '● 켜짐' : '○ 쓸 때 켜짐'); this.dot.toggleClass('is-on', u); });
     const hb = head.createDiv({ cls: 'rai-head-btns' });
-    const hist = hb.createEl('button', { cls: 'rai-hbtn' + (this.showHist ? ' is-on' : ''), text: '🕘 지난 대화', attr: { 'aria-label': '지난 대화 열기' } });
-    hist.onclick = () => { this.showHist = !this.showHist; this.draw(); };
+    const cm = AI_MODELS.find((m) => m.id === this.plugin.ai.model);
+    const mb = hb.createEl('button', { cls: 'rai-hbtn' + (this.showModels ? ' is-on' : ''), text: `🧠 ${cm ? cm.name.replace('Qwen3.5 ', '') : '모델'}`, attr: { 'aria-label': '로컬 모델 고르기' } });
+    mb.onclick = () => { this.showModels = !this.showModels; this.showHist = false; this.draw(); };
+    const hist = hb.createEl('button', { cls: 'rai-hbtn' + (this.showHist ? ' is-on' : ''), text: '🕘', attr: { 'aria-label': '지난 대화 열기' } });
+    hist.onclick = () => { this.showHist = !this.showHist; this.showModels = false; this.draw(); };
     const nw = hb.createEl('button', { cls: 'rai-hbtn', text: '＋ 새 대화', attr: { 'aria-label': '앞 대화와 상관없이 새로 묻기' } });
     nw.onclick = () => { if (this.busy) return; this.sess = this.newSess(); this.showHist = false; this.draw(); };
     this.log = c.createDiv({ cls: 'rai-log' });
-    if (this.showHist) this.drawHist();
+    if (this.showModels) this.drawModels();
+    else if (this.showHist) this.drawHist();
     else if (!this.sess.turns.length && !this.pending) this.empty();
     else {
       const last = this.sess.turns[this.sess.turns.length - 1];
@@ -3231,6 +3270,33 @@ class AIView extends ItemView {
     this.sendBtn = row.createEl('button', { cls: 'mod-cta rai-send', text: this.busy ? '■ 멈추기' : '보내기' });
     this.sendBtn.onclick = () => (this.busy ? this.busy.abort() : this.send());
     setTimeout(() => this.ta.focus(), 50);
+  }
+  // 로컬 모델 고르기: 이 맥 메모리에 맞는 것을 권하고, 없으면 받기
+  drawModels() {
+    const AI = this.plugin.ai, ram = LocalAI.ramGB(), cur = AI.model;
+    const h = this.log.createDiv({ cls: 'rai-hist' });
+    h.createDiv({ cls: 'rai-hist-head', text: `로컬 모델 · 이 맥 메모리 ${ram}GB` });
+    h.createDiv({ cls: 'rai-muted', text: '고른 모델은 이 맥에서만 써요 (다른 맥은 따로 골라요). 모두 맥 안에서만 돌아요.' });
+    const best = [...AI_MODELS].reverse().find((m) => ram >= m.ram);
+    for (const m of AI_MODELS) {
+      const r = h.createDiv({ cls: 'rai-hist-row rai-model' + (m.id === cur ? ' is-cur' : '') });
+      const t = r.createDiv({ cls: 'rai-hist-t' });
+      t.createDiv({ cls: 'rai-hist-title', text: `${m.id === cur ? '✓ ' : ''}${m.name}${best && best.id === m.id ? ' · 이 맥에 추천' : ''}` });
+      t.createDiv({ cls: 'rai-muted', text: `${m.note} · ${m.size}GB · 메모리 ${m.ram}GB 이상` + (ram < m.ram ? ' — 이 맥에는 무거울 수 있어요' : '') });
+      const have = LocalAI.has(m.id);
+      const b = r.createEl('button', { cls: m.id === cur ? '' : 'mod-cta', text: m.id === cur ? '쓰는 중' : have ? '이걸로 쓰기' : `받기 (${m.size}GB)` });
+      b.disabled = m.id === cur;
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        if (!have) {
+          b.disabled = true;
+          try { await AI.download(m.id, (p) => b.setText(`받는 중… ${p}%`)); } catch (err) { new Notice(err.message); b.disabled = false; b.setText(`받기 (${m.size}GB)`); return; }
+          new Notice(`${m.name} 을(를) 받았어요`);
+        }
+        AI.setModel(m.id);
+        this.draw();
+      };
+    }
   }
   drawHist() {
     const list = this.sessions();

@@ -19,24 +19,20 @@
 
 ## 설치 (한 번만)
 
-준비물: Apple Silicon 맥, [Homebrew](https://brew.sh), [옵시디언](https://obsidian.md)(볼트 하나 이상), 카카오톡 맥 앱(로그인)
+준비물: Apple Silicon 맥, [Homebrew](https://brew.sh) (없으면 설치 창에서 바로 설치), [옵시디언](https://obsidian.md)(볼트 하나 이상), 카카오톡 맥 앱(로그인)
 
-1. **[Rappo.zip 내려받기](https://github.com/EloyYang/rappo/releases/latest/download/Rappo.zip)** → 압축을 풀어
-   `Rappo` 폴더를 `~/Documents` 같은 곳에 둡니다. 설치 뒤에도 앱이 이 폴더의 코드를 쓰니 지우지 마세요.
-2. 터미널에서:
-   ```bash
-   bash ~/Documents/Rappo/install.sh
-   ```
-   (또는 `git clone https://github.com/EloyYang/rappo.git ~/Documents/Rappo` 후 같은 명령)
-   - 녹취 폴더를 묻습니다 (휴대폰 통화 녹음이 동기화되는 폴더).
-   - 이미 녹취가 있으면 모두 변환할지 묻습니다 (기본: 지금부터 생기는 것만).
-   - 옵시디언 볼트를 찾아 **대시보드·표·검색 플러그인을 자동으로 넣습니다** (볼트가 여러 개면 번호로 고름).
-   - 메뉴막대 앱 `~/Applications/Rappo.app` 을 만들고 실행합니다.
-3. 끝에 안내되는 대로:
-   - 시스템 설정 → 개인정보 보호 및 보안 → **전체 디스크 접근 권한** 에 `Rappo.app` 추가
-   - 메뉴막대 Rappo → **로그인 시 자동 실행**
-   - 메뉴막대 Rappo → **내 목소리 등록…** (전사문에서 '나'를 구분)
-   - 옵시디언을 열고 플러그인 사용을 허용 → `통화기록/라포 홈` 열기
+1. **[Rappo.dmg 내려받기](https://github.com/EloyYang/rappo/releases/latest/download/Rappo.dmg)** → 열어서 `Rappo` 를 `Applications` 로 끌어다 놓기
+2. 응용 프로그램에서 **Rappo** 열기
+   - 처음 열 때 "확인되지 않은 개발자" 안내가 뜨면: 시스템 설정 → 개인정보 보호 및 보안 → 아래쪽 **그래도 열기**
+3. 설치 창에서 고르고 **설치**:
+   - **이 맥에서 할 일**: *이 맥에서 정리하기*(녹음·카톡 → 노트·할 일·캘린더) 또는 *AI·보기만*(다른 맥이 이미 정리 중이고, 이 맥에서는 옵시디언 Rappo AI 만)
+   - 통화 녹음 폴더, 옵시디언 볼트, **로컬 AI 모델** (메모리 8GB: Qwen3.5 4B · 16GB 이상: 9B 추천)
+4. 끝 화면 안내대로: **전체 디스크 접근 권한**에 Rappo 추가, **로그인 시 자동 실행**, 옵시디언에서 플러그인 허용 → `통화기록/라포 홈`
+
+두 맥이 같은 볼트를 동기화해서 쓰면 정리는 한 맥에서만 하고, 다른 맥은 *AI·보기만*으로 설치하세요 (함께 정리하면 할 일·캘린더 일정이 겹칠 수 있어요).
+
+터미널로 설치하려면: [Rappo.zip](https://github.com/EloyYang/rappo/releases/latest/download/Rappo.zip) 을 풀어 `~/Documents/Rappo` 에 두고 `bash ~/Documents/Rappo/install.sh`
+(또는 `git clone https://github.com/EloyYang/rappo.git ~/Documents/Rappo` 후 같은 명령)
 
 다시 설치해도(업데이트) 안전합니다. 기존 설정과 노트는 그대로 두고 플러그인만 최신으로 바꿉니다.
 
