@@ -1609,8 +1609,21 @@ class ContactDash {
     const tasks = await P.tasks.load();
     const { ev, plans } = await P.days.upcoming();
     const recent = P.index.recent();
+    const pays = await P.spend.load();
     status.remove();
     const td = today(), open = tasks.filter((t) => t.status === ' ');
+    // 오늘 일정: 오늘이 마감인 할 일 · 오늘 약속 · 오늘 챙길 날
+    const todayItems = [
+      ...plans.filter((p) => p.date === td).map((p) => ({ time: p.time || '', text: `📅 ${p.room} · ${clean(p.text).slice(0, 24)}` })),
+      ...open.filter((t) => t.due === td).map((t) => ({ time: t.time || '', text: `✅ ${t.text}` })),
+      ...ev.filter((e) => e.dday === 0 && !e.guess).map((e) => ({ time: '', text: `${e.kind === 'birth' ? '🎂' : e.kind === 'anniv' ? '💐' : '🗓'} ${e.title}` })),
+    ].sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
+    // 이번 달 소비
+    const ym = td.slice(0, 7), dayN = Number(td.slice(8));
+    const [yy, mm] = ym.split('-').map(Number), pm = `${mm === 1 ? yy - 1 : yy}-${pad(mm === 1 ? 12 : mm - 1)}`;
+    const mon = pays.filter((p) => p.date.startsWith(ym)), spent = mon.reduce((a, p) => a + p.amount, 0);
+    const lastSame = pays.filter((p) => p.date.startsWith(pm) && Number(p.date.slice(8)) <= dayN).reduce((a, p) => a + p.amount, 0);
+    const budget = Number(P.data.budget || 0);
     const late = open.filter((t) => t.due && t.due < td), soon = open.filter((t) => t.due && t.due >= td && -daysSince(t.due) <= 3);
     const days7 = ev.filter((e) => e.dday <= 7 && !e.guess);
     const todayC = recent.filter((e) => e.last.startsWith(td));
@@ -1620,10 +1633,17 @@ class ContactDash {
     const head = r.createDiv({ cls: 'rd-header' });
     const ht = head.createDiv();
     const now = new Date();
-    ht.createDiv({ cls: 'rd-date', text: `${now.getMonth() + 1}월 ${now.getDate()}일 ${WEEK[now.getDay()]}요일` });
-    ht.createDiv({ cls: 'rd-sub', text: '연락 · 할 일 · 챙길 날' });
+    ht.createDiv({ cls: 'rd-date', text: '🏠 라포 홈' });
+    ht.createDiv({ cls: 'rd-sub', text: `${now.getMonth() + 1}월 ${now.getDate()}일 ${WEEK[now.getDay()]}요일 · 연락 · 할 일 · 챙길 날 · 소비` });
     const act = head.createDiv({ cls: 'rd-actions' });
     act.createEl('button', { text: '＋ 할 일', cls: 'mod-cta' }).onclick = () => new TaskModal(P, null, async (v) => { await P.tasks.add(v); this.render(); }).open();
+    act.createEl('button', { text: '💳 소비' }).onclick = () => this.openSpend();
+    act.createEl('button', { text: '📥 이용내역 넣기' }).onclick = async () => {
+      const dir = `${P.spend.dir}/가져오기`;
+      await ensureFolder(app, dir);
+      try { require('electron').shell.openPath(app.vault.adapter.getFullPath(dir)); } catch (e) { /* 모바일 */ }
+      new Notice('현대카드 이용내역 파일(.xlsx·.xls·.csv)을 이 폴더에 넣으면 다음 정리 때 들어가요.', 8000);
+    };
     const sb = act.createEl('button', { text: this.searchOpen ? '🔍 검색 닫기' : '🔍 대화 검색', cls: this.searchOpen ? 'is-active' : '' });
     sb.onclick = () => { this.searchOpen = !this.searchOpen; this.render(); };
 
@@ -1644,8 +1664,11 @@ class ContactDash {
       t.onclick = onclick;
     };
     tile('남은 할 일', open.length, late.length ? 'over' : soon.length ? 'todo' : '', `마감 지남 ${late.length} · 3일 내 ${soon.length}`, modal('✅ 할 일', TodoView));
-    tile('7일 안 챙길 날', days7.length, days7.length ? 'todo' : '', days7[0] ? `${days7[0].dday ? 'D-' + days7[0].dday : '오늘'} ${days7[0].title}` : '조용한 한 주', modal('🎂 챙길 날', DaysView));
-    tile('다가오는 일정', plans.length, plans.length ? 'doing' : '', plans[0] ? `${plans[0].date.slice(5).replace('-', '/')} ${plans[0].room}` : '대화에서 정한 약속', modal('🎂 챙길 날 · 일정', DaysView));
+    tile('오늘 일정', todayItems.length, todayItems.length ? 'todo' : '', todayItems[0] ? `${todayItems[0].time ? todayItems[0].time + ' ' : ''}${todayItems[0].text}` : '오늘은 정해진 일정이 없어요', modal('🎂 챙길 날 · 일정', DaysView));
+    const diffM = lastSame ? Math.round((spent - lastSame) / Math.abs(lastSame) * 100) : null;
+    tile('이번 달 지출', won(spent), budget && spent > budget ? 'over' : 'doing',
+      [budget ? `예산 ${Math.round(spent / budget * 100)}%` : '', diffM === null ? '' : `지난달보다 ${diffM >= 0 ? diffM + '% 더' : -diffM + '% 덜'}`].filter(Boolean).join(' · ') || '현대카드 결제',
+      () => this.openSpend());
     tile('오늘 연락', todayC.length, '', `📞 ${todayC.filter((e) => e.call && e.call.date === td).length} · 💬 ${todayC.filter((e) => e.talk && e.talk.date === td).length}`, modal('🕘 최근 연락', RecentView));
 
     const section = (parent, title, count, more) => {
@@ -1663,8 +1686,8 @@ class ContactDash {
       row.createSpan({ cls: 'rd-dday' + (n < 0 ? ' over' : n <= 3 ? ' soon' : ''), text: n < 0 ? `${-n}일 지남` : n === 0 ? '오늘' : `D-${n}` + (extra || '') });
     };
 
-    // 1행: 할 일 | 챙길 날 + 일정
-    const row1 = r.createDiv({ cls: 'rd-row' });
+    // 1행: 할 일 | 챙길 날 + 일정 | 이번 달 소비
+    const row1 = r.createDiv({ cls: 'rd-row rd-row-3' });
     const tb = section(row1.createDiv({ cls: 'rd-col' }), '✅ 할 일', open.length, modal('✅ 할 일', TodoView));
     const sorted = [...open].sort((a, b) => (PRIO_RANK[a.prio] - PRIO_RANK[b.prio]) || (a.due || '9999').localeCompare(b.due || '9999'));
     if (!sorted.length) empty(tb, '남은 할 일이 없어요');
@@ -1691,6 +1714,98 @@ class ContactDash {
     }
     const guessN = ev.filter((e) => e.guess).length;
     if (guessN) { const a = db.createEl('a', { cls: 'rd-hint', text: `🔎 카톡에서 찾은 생일 후보 ${guessN}명 확인하기 ›` }); a.onclick = modal('🎂 챙길 날', DaysView); }
+    // 💳 이번 달 소비 (작게) — 자세히는 소비 대시보드
+    const sp = row1.createDiv({ cls: 'rd-col' }).createDiv({ cls: 'rd-section' });
+    const sh = sp.createDiv({ cls: 'rd-section-head' });
+    sh.createSpan({ cls: 'rd-section-title', text: '💳 이번 달 소비' });
+    const so = sh.createEl('a', { cls: 'rd-more', text: '월·년 보기 ›' }); so.onclick = () => this.openSpend();
+    const sbd = sp.createDiv({ cls: 'rd-body' });
+    if (!mon.length) sbd.createDiv({ cls: 'rd-empty', text: '이번 달 결제가 아직 없어요' });
+    else {
+      const top = sbd.createDiv({ cls: 'hm-mini' });
+      const pct = budget ? Math.min(100, Math.round(spent / budget * 100)) : null;
+      if (pct !== null) { const ring = top.createDiv({ cls: 'hm-ring' + (spent > budget ? ' over' : '') }); ring.style.setProperty('--p', `${pct}%`); ring.createEl('b', { text: `${pct}%` }); }
+      const tx = top.createDiv();
+      tx.createDiv({ cls: 'hm-big', text: budget ? `${won(spent)} / 예산 ${won(budget)}` : won(spent) });
+      tx.createDiv({ cls: 'rd-muted', text: (budget ? `남은 돈 ${won(budget - spent)} · ` : '') + `하루 평균 ${won(spent / Math.max(1, dayN))}` });
+      const byc = [...mon.reduce((m2, p) => m2.set(p.cat, (m2.get(p.cat) || 0) + p.amount), new Map())].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      const cm = Math.max(1, ...byc.map(([, v]) => v));
+      for (const [c, v] of byc) {
+        const xx = sbd.createDiv({ cls: 'sp-cat' });
+        const tt = xx.createDiv({ cls: 'sp-cat-top' }); tt.createSpan({ text: catLabel(c) }); tt.createSpan({ cls: 'rd-muted', text: `${won(v)} · ${Math.round(v / Math.max(1, spent) * 100)}%` });
+        xx.createDiv({ cls: 'sp-bar' }).createDiv({ cls: 'sp-fill' }).style.width = (v / cm * 100) + '%';
+      }
+      for (const p of mon.slice(0, 2)) {
+        const xx = rowEl(sbd);
+        xx.createSpan({ cls: 'rd-muted rd-when', text: `${p.date.slice(5).replace('-', '/')} ${p.time}` });
+        xx.createSpan({ cls: 'rd-text', text: p.merchant.replace(/^(주식회사|\(주\)|㈜)\s*/, '').replace(/\s*주식회사$/, '') });
+        xx.createSpan({ cls: 'sp-amt', text: won(p.amount) });
+      }
+      const nCheck = mon.filter((p) => p.check).length;
+      if (nCheck) { const a2 = sbd.createEl('a', { cls: 'rd-hint sp-check-link', text: `🔎 분류 확인할 결제 ${nCheck}건 ›` }); a2.onclick = () => this.openSpend(); }
+    }
+
+    // 📋 PARA 할 일 보드: 시작 전·진행 중 노트와 진행 중 프로젝트
+    this.paraBoard(r);
+  }
+  paraBoard(r) {
+    const app = this.app, td = today();
+    const items = [];
+    for (const f of app.vault.getMarkdownFiles()) {
+      if (f.path.startsWith('4. Archive/') || f.path.startsWith('_')) continue;
+      const fm = app.metadataCache.getFileCache(f)?.frontmatter;
+      if (!fm || !fm.type) continue;
+      const ty = String(fm.type), st = String(fm.status || '');
+      const link = (v) => [].concat(v || []).map((x) => String(x).replace(/^\[\[|\]\]$/g, '').split('|')[0]).filter(Boolean);
+      const end = fm.end ? String(fm.end).slice(0, 10) : '';
+      if (ty === 'note' && (st === '시작 전' || st === '진행 중')) items.push({ f, ty, st, end, ctx: [...link(fm.project), ...link(fm.area)][0] || '' });
+      if (ty === 'project' && (st === '진행 중' || st === '시작 안 함' || st === '시작 전' || !st)) items.push({ f, ty, st: st || '시작 안 함', end, ctx: link(fm.area)[0] || '' });
+    }
+    const byEnd = (a, b) => (a.end || '9999').localeCompare(b.end || '9999') || b.f.stat.mtime - a.f.stat.mtime;
+    const notes = items.filter((i) => i.ty === 'note').sort((a, b) => (a.st === '진행 중' ? 0 : 1) - (b.st === '진행 중' ? 0 : 1) || byEnd(a, b));
+    const projects = items.filter((i) => i.ty === 'project').sort((a, b) => (a.st === '진행 중' ? 0 : 1) - (b.st === '진행 중' ? 0 : 1) || byEnd(a, b));
+    const row = r.createDiv({ cls: 'rd-row' });
+    const section = (title, count) => {
+      const s2 = row.createDiv({ cls: 'rd-col' }).createDiv({ cls: 'rd-section' });
+      const h = s2.createDiv({ cls: 'rd-section-head' });
+      h.createSpan({ cls: 'rd-section-title', text: title });
+      h.createSpan({ cls: 'rd-count', text: String(count) });
+      const dash = app.vault.getAbstractFileByPath('PARA 대시보드.md') || app.vault.getAbstractFileByPath('대시보드.md');
+      if (dash) { const m = h.createEl('a', { cls: 'rd-more', text: 'PARA 대시보드 ›' }); m.onclick = () => app.workspace.getLeaf(false).openFile(dash); }
+      return s2.createDiv({ cls: 'rd-body' });
+    };
+    const line = (box, it) => {
+      const x = box.createDiv({ cls: 'rd-list-row' });
+      x.createSpan({ cls: 'pa-pill ' + (it.st === '진행 중' ? 'is-doing' : 'is-todo'), text: it.st === '시작 안 함' ? '시작 전' : it.st });
+      const a = x.createEl('a', { cls: 'rd-text rd-link', text: it.f.basename });
+      a.onclick = (e) => app.workspace.getLeaf(e.metaKey || e.ctrlKey ? 'tab' : false).openFile(it.f);
+      if (it.ctx) x.createSpan({ cls: 'rd-chip', text: it.ctx });
+      if (it.end) {
+        const n = -daysSince(it.end);
+        x.createSpan({ cls: 'rd-dday' + (n < 0 ? ' over' : n <= 3 ? ' soon' : ''), text: n < 0 ? `${-n}일 지남` : n === 0 ? '오늘' : `D-${n}` });
+      }
+      // 다음 단계로: 시작 전 → 진행 중 → 완료
+      const waiting = it.st === '시작 전' || it.st === '시작 안 함';
+      const next = waiting ? '진행 중' : '완료';
+      const b = x.createEl('a', { cls: 'pa-next', text: waiting ? '▶' : '✓', attr: { 'aria-label': `${next}(으)로` } });
+      b.onclick = async () => { await app.fileManager.processFrontMatter(it.f, (fm) => { fm.status = next; }); new Notice(`${it.f.basename} → ${next}`); setTimeout(() => this.render(), 300); };
+    };
+    const nb = section('📝 할 일 노트 · 시작 전 · 진행 중', notes.length);
+    if (!notes.length) nb.createDiv({ cls: 'rd-empty', text: '시작 전·진행 중인 노트가 없어요' });
+    for (const it of notes.slice(0, 10)) line(nb, it);
+    if (notes.length > 10) nb.createDiv({ cls: 'rd-empty', text: `+ ${notes.length - 10}개 더 (PARA 대시보드에서)` });
+    const pb = section('📁 프로젝트 · 진행 중 · 시작 전', projects.length);
+    if (!projects.length) pb.createDiv({ cls: 'rd-empty', text: '진행 중·시작 전 프로젝트가 없어요' });
+    for (const it of projects.slice(0, 10)) line(pb, it);
+    if (projects.length > 10) pb.createDiv({ cls: 'rd-empty', text: `+ ${projects.length - 10}개 더 (PARA 대시보드에서)` });
+  }
+  async openSpend() {
+    const app = this.app, path = `${BASE}/소비/소비 대시보드.md`;
+    let f = app.vault.getAbstractFileByPath(path);
+    const body = '---\ncssclasses:\n  - pd-wide\n  - rappo-dash\ntags: [대시보드]\n---\n```소비\n```\n';
+    if (!(f instanceof TFile)) { await ensureFolder(app, `${BASE}/소비`); f = await app.vault.create(path, body); }
+    else if (!(await app.vault.read(f)).includes('```소비')) await app.vault.modify(f, body);
+    await app.workspace.getLeaf(false).openFile(f);
   }
 }
 class ContactDashChild extends MarkdownRenderChild {
@@ -1699,6 +1814,501 @@ class ContactDashChild extends MarkdownRenderChild {
     this.view = new ContactDash(this.plugin, this.containerEl);
     this.view.render();
   }
+}
+
+// ---------- 사람 한 명: 약속·할 일·챙길 날·통화 기록 한눈에 (연락처 카드를 누르면) ----------
+class PersonView {
+  constructor(plugin, root, name) { this.plugin = plugin; this.app = plugin.app; this.root = root; this.name = name; }
+  async render() {
+    const r = this.root, P = this.plugin, app = this.app, name = this.name;
+    r.empty(); r.addClass('ks-root', 'rd-root');
+    const status = r.createDiv({ cls: 'ks-status', text: '정리 중…' });
+    await P.index.ensure();
+    const allTasks = await P.tasks.load();
+    const { dated } = await P.days.load();
+    const tasks = allTasks.filter((t) => alias.includes(t.who));
+    const { ev } = await P.days.upcoming();
+    status.remove();
+    // 같은 사람의 다른 이름: 통화는 '홍길동', 카톡 1:1 방은 '길동'처럼 성을 뺀 이름인 경우
+    // (그 방에서 이 사람이 말한 기록이 있고, 나 말고 다른 사람이 거의 없는 방일 때만)
+    const short = name.length >= 3 ? name.slice(1) : '';
+    const okAlias = short && [...P.index.files.values()].some((c) => !c.call && c.room === short && c.msgs.some((m) => m.who === name)
+      && new Set(c.msgs.map((m) => m.who).filter((w) => w !== '나')).size <= 2);
+    const alias = okAlias ? [name, short] : [name];
+    const st = P.index.stats(name);
+    for (const a of alias.slice(1)) {
+      const s2 = P.index.stats(a);
+      st.talk += s2.talk; st.calls += s2.calls;
+      for (const d of s2.days) st.days.add(d);
+      if (s2.first && (!st.first || s2.first < st.first)) st.first = s2.first;
+      if (s2.last > st.last) st.last = s2.last;
+    }
+    const td = today();
+    // 연락처 노트(번호)
+    let phone = '', note = null;
+    for (const f of app.vault.getMarkdownFiles()) {
+      if (!f.path.startsWith(CONTACTS + '/')) continue;
+      const fm = app.metadataCache.getFileCache(f)?.frontmatter || {};
+      const nm = String(fm.name || '').trim();
+      if (nm === name || String(fm.phone || '') === name || f.basename === name) { phone = String(fm.phone || ''); note = f; break; }
+    }
+
+    // 머리
+    const head = r.createDiv({ cls: 'rd-header' });
+    const ht = head.createDiv({ cls: 'rd-person-head' });
+    ht.createDiv({ cls: 'rd-avatar rd-avatar-lg', text: (name.match(/[가-힣A-Za-z]/) || ['#'])[0] });
+    const nm = ht.createDiv();
+    nm.createDiv({ cls: 'rd-date', text: name + (alias.length > 1 ? `  ` : '') }).createSpan({ cls: 'rd-muted', text: alias.length > 1 ? `카톡: ${alias.slice(1).join(', ')}` : '' });
+    const gap = st.last ? daysSince(st.last) : null;
+    nm.createDiv({ cls: 'rd-sub', text: [phone && phone !== name ? phone : '', st.first ? `처음 ${st.first}` : '', gap !== null ? (gap === 0 ? '오늘 연락' : `마지막 연락 ${gap}일 전`) : ''].filter(Boolean).join(' · ') });
+    const act = head.createDiv({ cls: 'rd-actions' });
+    act.createEl('button', { cls: 'mod-cta', text: '💬 대화 전체 보기' }).onclick = () => new SearchModal(P, { room: name }).open();
+    act.createEl('button', { text: '＋ 할 일' }).onclick = () => new TaskModal(P, { who: name }, async (v) => { await P.tasks.add({ ...v, who: v.who || name }); this.render(); }).open();
+    if (note) act.createEl('button', { text: '연락처 노트' }).onclick = () => app.workspace.getLeaf(false).openFile(note);
+
+    // 숫자
+    const kpi = r.createDiv({ cls: 'rd-kpis' });
+    const tile = (label, value, hint) => { const t = kpi.createDiv({ cls: 'rd-kpi' }); t.createDiv({ cls: 'rd-kpi-value', text: String(value) }); t.createDiv({ cls: 'rd-kpi-label', text: label }); if (hint) t.createDiv({ cls: 'rd-kpi-hint', text: hint }); };
+    tile('통화', st.calls, '');
+    tile('카톡', st.talk.toLocaleString(), st.group ? `단체방 발언 ${st.group.toLocaleString()}` : '');
+    tile('연락한 날', st.days.size, st.first ? `${st.first.slice(0, 7)}부터` : '');
+    tile('남은 약속·할 일', tasks.filter((t) => t.status === ' ').length, `끝낸 일 ${tasks.filter((t) => /[xX]/.test(t.status)).length}`);
+
+    const section = (parent, title, count) => {
+      const s = parent.createDiv({ cls: 'rd-section' });
+      const h = s.createDiv({ cls: 'rd-section-head' });
+      h.createSpan({ cls: 'rd-section-title', text: title });
+      if (count !== undefined) h.createSpan({ cls: 'rd-count', text: String(count) });
+      return s.createDiv({ cls: 'rd-body' });
+    };
+    const row = (box) => box.createDiv({ cls: 'rd-list-row' });
+    const empty = (box, t) => box.createDiv({ cls: 'rd-empty', text: t });
+    const dd = (x, d) => { const n = -daysSince(d); x.createSpan({ cls: 'rd-dday' + (n < 0 ? ' over' : n <= 3 ? ' soon' : ''), text: n < 0 ? `${-n}일 지남` : n === 0 ? '오늘' : `D-${n}` }); };
+
+    const row1 = r.createDiv({ cls: 'rd-row' });
+    // 약속·할 일 (이 사람과)
+    const tb = section(row1.createDiv({ cls: 'rd-col' }), '✅ 약속·할 일', tasks.length);
+    const order = { ' ': 0, x: 1, X: 1, '-': 2 };
+    const ts = [...tasks].filter((t) => t.status !== '-').sort((a, b) => (order[a.status] - order[b.status]) || (a.due || '9999').localeCompare(b.due || '9999'));
+    if (!ts.length) empty(tb, '이 사람과 정한 할 일·약속이 아직 없어요');
+    for (const t of ts.slice(0, 12)) {
+      const x = row(tb);
+      const c = x.createEl('input', { type: 'checkbox' });
+      c.checked = t.status !== ' ';
+      c.onchange = async () => { await P.tasks.update(t, { status: c.checked ? 'x' : ' ' }); this.render(); };
+      x.createSpan({ cls: 'rd-text' + (t.status !== ' ' ? ' rd-done' : ''), text: (t.time ? '📅 ' : '') + t.text });
+      if (t.due && t.status === ' ') dd(x, t.due);
+      else if (t.due) x.createSpan({ cls: 'rd-muted', text: t.due.slice(5).replace('-', '/') });
+      const lk = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/.exec(t.link || '');
+      if (lk) { const a = x.createEl('a', { cls: 'rd-muted rd-link', text: lk[2] || '출처' }); a.onclick = () => app.workspace.openLinkText(lk[1], P.tasks.path, false); }
+    }
+    // 챙길 날 (생일·기념일·명절)
+    const db = section(row1.createDiv({ cls: 'rd-col' }), '🎂 챙길 날');
+    const mine = dated.filter((e) => alias.includes(e.name));
+    const hol = ev.filter((e) => e.kind === 'holiday' && e.names.some((n) => alias.includes(n)));
+    const guess = mine.some((e) => e.label === '생일') ? [] : ev.filter((e) => e.guess && e.names.some((n) => alias.includes(n)));
+    if (!mine.length && !hol.length && !guess.length) empty(db, '저장된 생일·기념일이 없어요');
+    for (const e of mine) {
+      const hit = nextOf(e.m, e.d, e.lunar);
+      const x = row(db);
+      if (hit) dd(x, hit.date);
+      x.createSpan({ cls: 'rd-text', text: `${e.label === '생일' ? '🎂' : '💐'} ${e.label}${e.year && e.label !== '생일' && hit ? ` ${Number(hit.date.slice(0, 4)) - e.year}주년` : ''}` });
+      x.createSpan({ cls: 'rd-muted', text: mdText(e) });
+    }
+    for (const e of guess) {
+      const x = row(db); dd(x, e.date);
+      x.createSpan({ cls: 'rd-text rd-guess', text: `🎂 생일 (카톡에서 추정)` });
+      x.createSpan({ cls: 'rd-muted', text: e.sub.split(' · ')[0] });
+      const b = x.createEl('a', { cls: 'rd-chip rd-chip-link', text: '맞아요' });
+      b.onclick = async () => { const g = e.guess; await P.days.append(`- ${name} | 생일 | ${g.lunar ? '음력 ' : ''}${pad(g.m)}-${pad(g.d)}`); this.render(); };
+    }
+    for (const e of hol) { const x = row(db); dd(x, e.date); x.createSpan({ cls: 'rd-text', text: `🗓 ${e.title}` }); x.createSpan({ cls: 'rd-muted', text: e.date.slice(5).replace('-', '/') }); }
+    const add = db.createEl('a', { cls: 'rd-hint', text: '✏️ 생일·기념일 적기 ›' });
+    add.onclick = () => P.days.openNote();
+
+    // 히스토리: 통화(요약) · 카톡 · 단체방 — 최신 순
+    const hist = [];
+    for (const c of P.index.files.values()) {
+      if (c.call && alias.includes(c.room)) {
+        const sm = c.msgs.find((m) => m.who === '요약');
+        hist.push({ d: `${c.call.date} ${c.call.time}`, icon: '📞', text: sm ? sm.text : `통화${c.call.dur ? ' ' + c.call.dur : ''}`, sub: c.call.dur, file: c.file, line: 0 });
+      } else if (!c.call && alias.includes(c.room) && c.msgs.length) {
+        // 월별 노트 하나 = 그달의 대화 묶음
+        const last = c.msgs[c.msgs.length - 1];
+        hist.push({ d: `${last.date} ${last.time}`, icon: c.kind === '단체' ? '👥' : '💬', text: `${c.msgs[0].date.slice(0, 7)} 대화 ${c.msgs.length.toLocaleString()}개 · ${last.who}: ${clean(last.text)}`, file: c.file, line: last.line });
+      }
+    }
+    hist.sort((a, b) => b.d.localeCompare(a.d));
+    const hb = section(r, '🕘 히스토리', hist.length);
+    if (!hist.length) empty(hb, '기록이 없어요');
+    for (const h of hist.slice(0, this.more ? 200 : 12)) {
+      const x = row(hb);
+      x.createSpan({ cls: 'rd-muted rd-when', text: h.d.slice(2, 10).replace(/-/g, '.') });
+      const a = x.createEl('a', { cls: 'rd-text rd-link', text: `${h.icon} ${clean(h.text)}` });
+      a.onclick = () => app.workspace.getLeaf(false).openFile(h.file, { eState: { line: h.line } });
+    }
+    if (hist.length > 12 && !this.more) { const m = hb.createEl('a', { cls: 'rd-hint', text: `더 보기 (${hist.length - 12}개) ›` }); m.onclick = () => { this.more = true; this.render(); }; }
+  }
+}
+class PersonModal extends Modal {
+  constructor(plugin, name) { super(plugin.app); this.plugin = plugin; this.name = name; }
+  onOpen() { this.modalEl.addClass('ks-modal', 'rd-person-modal'); new PersonView(this.plugin, this.contentEl, this.name).render(); }
+  onClose() { this.contentEl.empty(); }
+}
+
+// ---------- 💳 소비: 현대카드 승인 문자·이용내역 파일에서 모은 내역 (```소비```) ----------
+const PAY_RE = /^\s*-\s+(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) · (-?[\d,]+)원 · (.*?) · (.*?) · (.*?)(?:\s+#(\S+))?(?:\s+\^([pc])([0-9a-fk]+))?\s*$/;
+const CAT_LABEL = { 배달외식: '🍔 식사·배달', 식료품: '🥬 식료품', 생활용품: '🧻 생활용품', 패션뷰티: '👗 패션·뷰티', 사치기호: '💎 사치·기호',
+  쇼핑: '🛍 쇼핑(기타)', 교통: '🚕 교통', 구독디지털: '💻 구독·디지털', 공과금통신: '🧾 공과금·통신', 여가문화: '🎬 여가·문화',
+  의료건강: '💊 의료·건강', 장보기생활: '🛒 장보기·생활', 기타: '📦 기타' };
+// 여러 가지를 파는 곳 — 건마다 무엇을 샀는지 달라서 '분류 확인'을 권한다
+const MIXED_RE = /쿠팡|네이버|11번가|G마켓|지마켓|옥션|SSG|알리|테무|롯데온|위메프|티몬|카카오페이|토스|페이코|다이소/;
+function askText(app, title, placeholder) {
+  return new Promise((res) => {
+    const m = new Modal(app);
+    m.titleEl.setText(title);
+    m.contentEl.addClass('ks-task-form');
+    const inp = m.contentEl.createEl('input', { type: 'text', attr: { placeholder } });
+    const ok = m.contentEl.createDiv({ cls: 'ks-guess-btns' }).createEl('button', { text: '확인', cls: 'mod-cta' });
+    let done = false;
+    const fin = (v) => { if (done) return; done = true; m.close(); res(v); };
+    ok.onclick = () => fin(inp.value.trim());
+    inp.onkeydown = (e) => { if (e.key === 'Enter') fin(inp.value.trim()); };
+    m.onClose = () => fin('');
+    m.open(); setTimeout(() => inp.focus(), 50);
+  });
+}
+function catLabel(c) { return CAT_LABEL[c] || `🏷 ${c}`; }
+const won = (n) => `${n < 0 ? '-' : ''}${Math.abs(Math.round(n)).toLocaleString()}원`;
+
+class Spend {
+  constructor(plugin) { this.plugin = plugin; this.app = plugin.app; }
+  get dir() { return `${BASE}/소비`; }
+  async load() {
+    const map = (this.plugin.data.catMap || {}), byId = (this.plugin.data.catById || {});
+    const out = [];
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      if (!f.path.startsWith(this.dir + '/') || !/^\d{4}-\d{2}$/.test(f.basename)) continue;
+      const lines = (await this.app.vault.cachedRead(f)).split('\n');
+      lines.forEach((l, i) => {
+        const m = PAY_RE.exec(l);
+        if (!m) return;
+        const merchant = m[4].trim();
+        out.push({ date: m[1], time: m[2], amount: Number(m[3].replace(/,/g, '')), merchant, item: m[5].trim(), method: m[6].trim(),
+          src: m[8] || 'p', key: `${m[8] || 'p'}${m[9] || ''}`, file: f, line: i, raw: l });
+        const it = out[out.length - 1];
+        // 분류 정하는 순서: 이 결제만 정한 것 > 이 가게 전체로 정한 것 > 자동 분류
+        it.cat = byId[it.key] || map[merchant] || m[7] || '기타';
+        it.check = !byId[it.key] && !map[merchant] && MIXED_RE.test(merchant);
+      });
+    }
+    return this.dedupe(out).sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
+  }
+  // 같은 결제가 두 곳에서 들어온 경우 하나만: 카카오페이(현대카드로 결제) ↔ 현대카드 내역, 승인 문자 ↔ 이용내역 파일
+  dedupe(list) {
+    const day = (d) => new Date(d + 'T12:00:00').getTime() / 86400000;
+    const near = (a, b) => Math.abs(day(a.date) - day(b.date)) <= 1 && a.amount === b.amount;
+    const short = (s) => s.replace(/^(주식회사|\(주\)|㈜)\s*/, '').replace(/\s/g, '').slice(0, 2);
+    const cards = list.filter((p) => p.src === 'c');
+    const drop = new Set();
+    for (const p of list) {
+      if (p.src !== 'p' || !/현대카드/.test(p.method)) continue;
+      const c = cards.find((x) => !x.matched && near(x, p));
+      if (!c) continue;
+      c.matched = true; drop.add(p);
+      if (!c.item || c.item === '-') c.item = p.item;           // 카카오페이의 상품명을 카드 내역에
+      if (/카카오페이|KAKAOPAY|카카오\s*페이/i.test(c.merchant)) c.merchant = p.merchant;
+    }
+    for (let i = 0; i < cards.length; i++) for (let j = i + 1; j < cards.length; j++) {
+      const a = cards[i], b = cards[j];
+      if (drop.has(a) || drop.has(b) || a.date !== b.date || a.amount !== b.amount) continue;
+      const sameTime = a.time === b.time || a.time === '00:00' || b.time === '00:00';
+      if (sameTime && (short(a.merchant) === short(b.merchant) || a.merchant === '현대카드' || b.merchant === '현대카드')) drop.add(a.time === '00:00' ? a : b);
+    }
+    return list.filter((p) => !drop.has(p));
+  }
+  // 분류 바꾸기 — scope 'one': 이 결제만 / 'all': 이 가게 결제 모두(앞으로 오는 것도). 노트의 #태그도 함께 바꾼다
+  async setCat(p, cat, scope, all) {
+    const D = this.plugin.data;
+    if (scope === 'one') D.catById = { ...(D.catById || {}), [p.key]: cat };
+    else D.catMap = { ...(D.catMap || {}), [p.merchant]: cat };
+    await this.plugin.saveData(D);
+    const targets = scope === 'one' ? [p] : all.filter((x) => x.merchant === p.merchant && !(D.catById || {})[x.key]);
+    for (const f of new Set(targets.map((x) => x.file))) {
+      const keys = new Set(targets.filter((x) => x.file === f).map((x) => x.key));
+      await this.app.vault.process(f, (t) => t.split('\n').map((l) => {
+        const m = PAY_RE.exec(l);
+        if (!m || !keys.has(`${m[8] || 'p'}${m[9] || ''}`)) return l;
+        return l.replace(/\s+#\S+(?=\s+\^[pc]|\s*$)/, '').replace(/(\s+\^[pc][0-9a-fk]+)?\s*$/, (x) => ` #${cat}${x}`);
+      }).join('\n'));
+    }
+  }
+  cats() { return [...Object.keys(CAT_LABEL).filter((k) => k !== '장보기생활'), ...(this.plugin.data.customCats || [])]; }
+
+}
+
+class SpendView {
+  constructor(plugin, root) {
+    this.plugin = plugin; this.app = plugin.app; this.root = root;
+    this.month = today().slice(0, 7); this.cat = ''; this.shown = 15; this.mode = 'month'; this.year = Number(today().slice(0, 4));
+  }
+  // 월 / 년 전환 버튼
+  modeSeg(act) {
+    const seg = act.createDiv({ cls: 'ks-seg' });
+    for (const [v, label] of [['month', '월'], ['year', '년']]) {
+      const b = seg.createEl('button', { text: label });
+      b.toggleClass('is-active', this.mode === v);
+      b.onclick = () => { this.mode = v; if (v === 'year') this.year = Number(this.month.slice(0, 4)); this.cat = ''; this.render(); };
+    }
+  }
+  async render() {
+    const r = this.root, P = this.plugin;
+    r.empty(); r.addClass('ks-root', 'rd-root');
+    const all = await P.spend.load();
+    if (this.mode === 'year') return this.renderYear(r, all);
+    const ym = this.month, [y, m] = ym.split('-').map(Number);
+    const prev = `${m === 1 ? y - 1 : y}-${pad(m === 1 ? 12 : m - 1)}`, next = `${m === 12 ? y + 1 : y}-${pad(m === 12 ? 1 : m + 1)}`;
+    const cur = all.filter((p) => p.date.startsWith(ym));
+    const total = cur.reduce((s, p) => s + p.amount, 0);
+    const isNow = ym === today().slice(0, 7);
+    const dayN = isNow ? Number(today().slice(8)) : new Date(y, m, 0).getDate();
+    // 지난달 같은 날까지와 비교
+    const prevSame = all.filter((p) => p.date.startsWith(prev) && Number(p.date.slice(8)) <= dayN).reduce((s, p) => s + p.amount, 0);
+    const budget = Number(P.data.budget || 0);
+
+    // 머리
+    const head = r.createDiv({ cls: 'rd-header' });
+    const ht = head.createDiv();
+    ht.createDiv({ cls: 'rd-date', text: `💳 ${y}년 ${m}월 소비` });
+    ht.createDiv({ cls: 'rd-sub', text: '현대카드 승인 문자·이용내역 파일에서 모았어요' });
+    const act = head.createDiv({ cls: 'rd-actions' });
+    this.modeSeg(act);
+    act.createEl('button', { text: '◀' }).onclick = () => { this.month = prev; this.cat = ''; this.render(); };
+    if (!isNow) act.createEl('button', { text: '이번 달' }).onclick = () => { this.month = today().slice(0, 7); this.cat = ''; this.render(); };
+    act.createEl('button', { text: '▶' }).onclick = () => { this.month = next; this.cat = ''; this.render(); };
+    act.createEl('button', { text: budget ? `예산 ${won(budget)}` : '＋ 예산 정하기' }).onclick = () => this.askBudget();
+    // 현대카드 홈페이지·앱에서 받은 이용내역(엑셀) 넣는 폴더를 Finder 로 열기
+    act.createEl('button', { text: '📥 이용내역 넣기' }).onclick = async () => {
+      const dir = `${P.spend.dir}/가져오기`;
+      await ensureFolder(this.app, dir);
+      try { require('electron').shell.openPath(this.app.vault.adapter.getFullPath(dir)); }
+      catch (e) { new Notice(`이 폴더에 이용내역 파일을 넣어 주세요: ${dir}`); }
+      new Notice('현대카드 이용내역 파일(.xlsx·.xls·.csv)을 이 폴더에 넣으면 다음 정리 때 들어가요.', 8000);
+    };
+
+    if (!all.length) {
+      r.createDiv({ cls: 'rd-empty', text: '아직 결제 내역이 없어요. 현대카드 홈페이지·앱에서 이용내역(엑셀)을 내려받아 「소비/가져오기」 폴더에 넣거나, 아이폰 문자를 맥으로 전달해 두면 다음 정리 때 여기에 모여요.' });
+      return;
+    }
+    // 숫자 칸
+    const kpi = r.createDiv({ cls: 'rd-kpis' });
+    const tile = (label, value, cls, hint) => { const t = kpi.createDiv({ cls: `rd-kpi ${cls || ''}` }); t.createDiv({ cls: 'rd-kpi-value', text: value }); t.createDiv({ cls: 'rd-kpi-label', text: label }); if (hint) t.createDiv({ cls: 'rd-kpi-hint', text: hint }); return t; };
+    const diff = prevSame ? Math.round((total - prevSame) / Math.abs(prevSame) * 100) : null;
+    tile(isNow ? '이번 달 지출' : `${m}월 지출`, won(total), 'doing', diff === null ? '지난달 기록 없음' : `지난달 같은 날까지보다 ${diff >= 0 ? diff + '% 더' : -diff + '% 덜'}`);
+    tile('결제', `${cur.filter((p) => p.amount > 0).length}건`, '', `취소·환불 ${cur.filter((p) => p.amount < 0).length}건`);
+    tile('하루 평균', won(total / Math.max(1, dayN)), '', `${dayN}일 기준`);
+    if (budget) {
+      const left = budget - total, t = tile('예산 남음', won(left), left < 0 ? 'over' : total > budget * 0.8 ? 'todo' : '', `${Math.round(total / budget * 100)}% 사용`);
+      const bar = t.createDiv({ cls: 'sp-bar' }); bar.createDiv({ cls: 'sp-fill' + (left < 0 ? ' over' : '') }).style.width = Math.min(100, total / budget * 100) + '%';
+    } else tile('예산', '—', '', '＋ 예산 정하기로 한 달 예산을 정해요');
+
+    const section = (parent, title, more) => {
+      const s = parent.createDiv({ cls: 'rd-section' });
+      const h = s.createDiv({ cls: 'rd-section-head' });
+      h.createSpan({ cls: 'rd-section-title', text: title });
+      if (more) h.appendChild(more);
+      return s.createDiv({ cls: 'rd-body' });
+    };
+    const row1 = r.createDiv({ cls: 'rd-row' });
+    // 날짜별 막대
+    const db = section(row1.createDiv({ cls: 'rd-col' }), '📊 날짜별');
+    const days = new Date(y, m, 0).getDate(), per = new Array(days + 1).fill(0);
+    for (const p of cur) if (p.amount > 0) per[Number(p.date.slice(8))] += p.amount;
+    const max = Math.max(1, ...per);
+    const chart = db.createDiv({ cls: 'sp-chart' });
+    for (let d = 1; d <= days; d++) {
+      const col = chart.createDiv({ cls: 'sp-col' + (isNow && d === dayN ? ' is-today' : '') + (isNow && d > dayN ? ' is-future' : ''), attr: { 'aria-label': `${m}/${d} ${won(per[d])}` } });
+      col.createDiv({ cls: 'sp-colbar' }).style.height = (per[d] ? Math.max(3, per[d] / max * 100) : 0) + '%';
+      if (d === 1 || d % 5 === 0) col.createDiv({ cls: 'sp-lab', text: String(d) });
+    }
+    // 분류별
+    const cb = section(row1.createDiv({ cls: 'rd-col' }), '🗂 분류별');
+    const bycat = new Map();
+    for (const p of cur) bycat.set(p.cat, (bycat.get(p.cat) || 0) + p.amount);
+    const cats = [...bycat].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+    if (!cats.length) cb.createDiv({ cls: 'rd-empty', text: '이 달 결제가 없어요' });
+    const cmax = Math.max(1, ...cats.map(([, v]) => v));
+    for (const [c, v] of cats) {
+      const x = cb.createDiv({ cls: 'sp-cat' + (this.cat === c ? ' is-on' : '') });
+      x.onclick = () => { this.cat = this.cat === c ? '' : c; this.shown = 15; this.render(); };
+      const t = x.createDiv({ cls: 'sp-cat-top' });
+      t.createSpan({ text: catLabel(c) });
+      t.createSpan({ cls: 'rd-muted', text: `${won(v)} · ${Math.round(v / Math.max(1, total) * 100)}%` });
+      x.createDiv({ cls: 'sp-bar' }).createDiv({ cls: 'sp-fill' }).style.width = (v / cmax * 100) + '%';
+    }
+
+    const row2 = r.createDiv({ cls: 'rd-row' });
+    // 많이 쓴 곳
+    const mb = section(row2.createDiv({ cls: 'rd-col' }), '🏪 많이 쓴 곳');
+    const bym = new Map();
+    for (const p of cur) { const e = bym.get(p.merchant) || { v: 0, n: 0 }; e.v += p.amount; e.n++; bym.set(p.merchant, e); }
+    const tops = [...bym].filter(([, e]) => e.v > 0).sort((a, b) => b[1].v - a[1].v).slice(0, 7);
+    if (!tops.length) mb.createDiv({ cls: 'rd-empty', text: '이 달 결제가 없어요' });
+    for (const [name, e] of tops) {
+      const x = mb.createDiv({ cls: 'rd-list-row' });
+      x.createSpan({ cls: 'rd-text', text: name.replace(/^(주식회사|\(주\)|㈜)\s*/, '') });
+      x.createSpan({ cls: 'rd-muted', text: `${e.n}번` });
+      x.createSpan({ cls: 'sp-amt', text: won(e.v) });
+    }
+    // 결제 내역
+    const list = cur.filter((p) => this.cat === '__check' ? p.check : !this.cat || p.cat === this.cat);
+    const nCheck = cur.filter((p) => p.check).length;
+    let clear = null;
+    if (this.cat) { clear = createEl('a', { cls: 'rd-more', text: `${this.cat === '__check' ? '분류 확인할 것' : catLabel(this.cat)} 만 보는 중 · 전체 ›` }); clear.onclick = () => { this.cat = ''; this.render(); }; }
+    else if (nCheck) { clear = createEl('a', { cls: 'rd-more sp-check-link', text: `🔎 분류 확인 ${nCheck}건 ›` }); clear.onclick = () => { this.cat = '__check'; this.shown = 50; this.render(); }; }
+    const lb = section(row2.createDiv({ cls: 'rd-col' }), `🧾 결제 내역 ${list.length}건`, clear);
+    for (const p of list.slice(0, this.shown)) {
+      const x = lb.createDiv({ cls: 'rd-list-row sp-row' + (p.amount < 0 ? ' is-cancel' : '') });
+      x.createSpan({ cls: 'rd-muted rd-when', text: `${p.date.slice(5).replace('-', '/')} ${p.time}` });
+      const t = x.createDiv({ cls: 'rd-text sp-what' });
+      t.createSpan({ text: p.merchant.replace(/^(주식회사|\(주\)|㈜)\s*/, '') });
+      if (p.item && p.item !== '-') t.createSpan({ cls: 'rd-muted', text: ` · ${p.item}` });
+      if (p.check) t.createSpan({ cls: 'sp-check', text: '분류 확인', attr: { 'aria-label': '여러 가지를 파는 곳이에요. 무엇을 샀는지 분류를 골라 주세요' } });
+      const sel = x.createEl('select', { cls: 'dropdown sp-sel' });
+      for (const k of P.spend.cats()) sel.createEl('option', { value: k, text: catLabel(k) });
+      if (!P.spend.cats().includes(p.cat)) sel.createEl('option', { value: p.cat, text: catLabel(p.cat) });
+      sel.createEl('option', { value: '__new', text: '＋ 새 분류…' });
+      sel.value = p.cat;
+      sel.onchange = async () => {
+        let cat = sel.value;
+        if (cat === '__new') {
+          cat = await askText(this.app, '새 분류 이름', '예: 반려동물, 선물, 아이');
+          if (!cat) { sel.value = p.cat; return; }
+          cat = cat.replace(/[\s#·]+/g, '');
+          P.data.customCats = [...new Set([...(P.data.customCats || []), cat])];
+          await P.saveData(P.data);
+        }
+        // 이 결제만? 이 가게 전체?
+        const shop = p.merchant.replace(/^(주식회사|\(주\)|㈜)\s*/, '').replace(/\s*주식회사$/, '');
+        const n = all.filter((z) => z.merchant === p.merchant).length;
+        x.parentElement.querySelectorAll('.sp-scope').forEach((e) => e.remove());
+        const bar = createDiv({ cls: 'sp-scope' }); x.after(bar);
+        bar.createSpan({ cls: 'rd-muted', text: `${catLabel(cat)} 로 — ` });
+        bar.createEl('button', { text: '이 결제만' }).onclick = async () => { await P.spend.setCat(p, cat, 'one', all); this.render(); };
+        bar.createEl('button', { cls: 'mod-cta', text: `${shop} 결제 모두 (${n}건·앞으로도)` }).onclick = async () => { await P.spend.setCat(p, cat, 'all', all); new Notice(`${shop} → ${catLabel(cat)} (앞으로도)`); this.render(); };
+        bar.createEl('a', { cls: 'rd-more', text: '취소' }).onclick = () => { sel.value = p.cat; bar.remove(); };
+      };
+      x.createSpan({ cls: 'sp-amt', text: won(p.amount) });
+    }
+    if (list.length > this.shown) { const mo = lb.createEl('a', { cls: 'rd-hint', text: `더 보기 (${list.length - this.shown}건) ›` }); mo.onclick = () => { this.shown += 30; this.render(); }; }
+  }
+  // ---------- 연 단위 ----------
+  renderYear(r, all) {
+    const P = this.plugin, y = this.year, nowY = Number(today().slice(0, 4));
+    const isNow = y === nowY;
+    const cur = all.filter((p) => p.date.startsWith(`${y}-`));
+    const total = cur.reduce((s, p) => s + p.amount, 0);
+    const cutMD = isNow ? today().slice(5) : '12-31';
+    const lastSame = all.filter((p) => p.date.startsWith(`${y - 1}-`) && p.date.slice(5) <= cutMD).reduce((s, p) => s + p.amount, 0);
+    const months = isNow ? Number(today().slice(5, 7)) : 12;
+    const byM = new Array(13).fill(0), cnt = new Array(13).fill(0);
+    for (const p of cur) { const mm = Number(p.date.slice(5, 7)); byM[mm] += p.amount; if (p.amount > 0) cnt[mm]++; }
+    const budget = Number(P.data.budget || 0);
+    const man = (v) => (Math.abs(v) >= 10000 ? `${Math.round(v / 10000).toLocaleString()}만` : `${Math.round(v / 1000)}천`);
+    const toMonth = (mm) => { this.mode = 'month'; this.month = `${y}-${pad(mm)}`; this.render(); };
+
+    const head = r.createDiv({ cls: 'rd-header' });
+    const ht = head.createDiv();
+    ht.createDiv({ cls: 'rd-date', text: `💳 ${y}년 소비` });
+    ht.createDiv({ cls: 'rd-sub', text: `1월부터 ${isNow ? `오늘(${Number(today().slice(5, 7))}/${Number(today().slice(8))})까지` : '12월까지'}` });
+    const act = head.createDiv({ cls: 'rd-actions' });
+    this.modeSeg(act);
+    act.createEl('button', { text: '◀' }).onclick = () => { this.year--; this.render(); };
+    if (!isNow) act.createEl('button', { text: '올해' }).onclick = () => { this.year = nowY; this.render(); };
+    act.createEl('button', { text: '▶' }).onclick = () => { this.year++; this.render(); };
+    if (!cur.length) { r.createDiv({ cls: 'rd-empty', text: `${y}년 결제 내역이 없어요.` }); return; }
+
+    const kpi = r.createDiv({ cls: 'rd-kpis' });
+    const tile = (label, value, cls, hint) => { const t = kpi.createDiv({ cls: `rd-kpi ${cls || ''}` }); t.createDiv({ cls: 'rd-kpi-value', text: value }); t.createDiv({ cls: 'rd-kpi-label', text: label }); if (hint) t.createDiv({ cls: 'rd-kpi-hint', text: hint }); return t; };
+    const diff = lastSame ? Math.round((total - lastSame) / Math.abs(lastSame) * 100) : null;
+    tile(isNow ? '올해 지출' : `${y}년 지출`, won(total), 'doing', diff === null ? '지난해 기록 없음' : `지난해 같은 기간보다 ${diff >= 0 ? diff + '% 더' : -diff + '% 덜'}`);
+    tile('한 달 평균', won(total / Math.max(1, months)), '', `${months}개월 기준`);
+    const bestM = byM.reduce((b, v, i) => (i && v > byM[b] ? i : b), 1);
+    tile('가장 많이 쓴 달', `${bestM}월`, 'todo', won(byM[bestM]));
+    if (budget) { const left = budget * months - total; tile('예산 대비', won(left), left < 0 ? 'over' : '', `한 달 ${won(budget)} × ${months}개월`); }
+    else tile('결제', `${cur.filter((p) => p.amount > 0).length}건`, '', `취소·환불 ${cur.filter((p) => p.amount < 0).length}건`);
+
+    const section = (parent, title) => {
+      const s = parent.createDiv({ cls: 'rd-section' });
+      s.createDiv({ cls: 'rd-section-head' }).createSpan({ cls: 'rd-section-title', text: title });
+      return s.createDiv({ cls: 'rd-body' });
+    };
+    const row1 = r.createDiv({ cls: 'rd-row' });
+    // 월별 막대 (누르면 그달로)
+    const mb = section(row1.createDiv({ cls: 'rd-col' }), '📊 월별');
+    const max = Math.max(1, ...byM.slice(1));
+    const chart = mb.createDiv({ cls: 'sp-chart sp-chart-y' });
+    for (let mm = 1; mm <= 12; mm++) {
+      const col = chart.createDiv({ cls: 'sp-col' + (isNow && mm === months ? ' is-today' : '') + (isNow && mm > months ? ' is-future' : ''), attr: { 'aria-label': `${mm}월 ${won(byM[mm])} · ${cnt[mm]}건` } });
+      col.onclick = () => toMonth(mm);
+      if (byM[mm] > 0) col.createDiv({ cls: 'sp-val', text: man(byM[mm]) });
+      col.createDiv({ cls: 'sp-colbar' }).style.height = (byM[mm] > 0 ? Math.max(3, byM[mm] / max * 100) : 0) + '%';
+      col.createDiv({ cls: 'sp-lab', text: `${mm}` });
+    }
+    // 분류별 (한 해)
+    const cb = section(row1.createDiv({ cls: 'rd-col' }), '🗂 분류별');
+    const bycat = new Map();
+    for (const p of cur) bycat.set(p.cat, (bycat.get(p.cat) || 0) + p.amount);
+    const cats = [...bycat].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+    const cmax = Math.max(1, ...cats.map(([, v]) => v));
+    for (const [c, v] of cats) {
+      const x = cb.createDiv({ cls: 'sp-cat' });
+      const t = x.createDiv({ cls: 'sp-cat-top' });
+      t.createSpan({ text: catLabel(c) });
+      t.createSpan({ cls: 'rd-muted', text: `${won(v)} · ${Math.round(v / Math.max(1, total) * 100)}%` });
+      x.createDiv({ cls: 'sp-bar' }).createDiv({ cls: 'sp-fill' }).style.width = (v / cmax * 100) + '%';
+    }
+    const row2 = r.createDiv({ cls: 'rd-row' });
+    // 많이 쓴 곳 (한 해)
+    const tb = section(row2.createDiv({ cls: 'rd-col' }), '🏪 많이 쓴 곳');
+    const bym = new Map();
+    for (const p of cur) { const e = bym.get(p.merchant) || { v: 0, n: 0 }; e.v += p.amount; e.n++; bym.set(p.merchant, e); }
+    for (const [name, e] of [...bym].filter(([, e]) => e.v > 0).sort((a, b) => b[1].v - a[1].v).slice(0, 10)) {
+      const x = tb.createDiv({ cls: 'rd-list-row' });
+      x.createSpan({ cls: 'rd-text', text: name.replace(/^(주식회사|\(주\)|㈜)\s*/, '') });
+      x.createSpan({ cls: 'rd-muted', text: `${e.n}번` });
+      x.createSpan({ cls: 'sp-amt', text: won(e.v) });
+    }
+    // 달마다 한 줄 요약 (누르면 그달로)
+    const sb = section(row2.createDiv({ cls: 'rd-col' }), '🗓 달마다');
+    for (let mm = months; mm >= 1; mm--) {
+      if (!byM[mm] && !cnt[mm]) continue;
+      const ps = cur.filter((p) => Number(p.date.slice(5, 7)) === mm);
+      const top = [...ps.reduce((mp, p) => mp.set(p.cat, (mp.get(p.cat) || 0) + p.amount), new Map())].sort((a, b) => b[1] - a[1])[0];
+      const x = sb.createDiv({ cls: 'rd-list-row sp-month-row' });
+      x.onclick = () => toMonth(mm);
+      x.createSpan({ cls: 'rd-muted rd-when', text: `${mm}월` });
+      x.createSpan({ cls: 'rd-text', text: top ? `${catLabel(top[0])} 가장 많이` : '' });
+      x.createSpan({ cls: 'rd-muted', text: `${cnt[mm]}건` });
+      x.createSpan({ cls: 'sp-amt', text: won(byM[mm]) });
+    }
+  }
+
+  askBudget() {
+    const P = this.plugin, view = this;
+    const md = new Modal(this.app);
+    md.titleEl.setText('한 달 예산');
+    md.contentEl.addClass('ks-task-form');
+    const inp = md.contentEl.createEl('input', { type: 'number', value: String(P.data.budget || ''), attr: { placeholder: '예: 800000 (비우면 예산 없음)' } });
+    const b = md.contentEl.createDiv({ cls: 'ks-guess-btns' }).createEl('button', { text: '저장', cls: 'mod-cta' });
+    b.onclick = async () => { P.data.budget = Number(inp.value) || 0; await P.saveData(P.data); md.close(); view.render(); };
+    md.open();
+    setTimeout(() => inp.focus(), 50);
+  }
+}
+class SpendChild extends MarkdownRenderChild {
+  constructor(plugin, el) { super(el); this.plugin = plugin; }
+  onload() { new SpendView(this.plugin, this.containerEl).render(); }
 }
 
 // ---------- 👥 연락처: 사람·단체방을 카드로 (```연락처```) ----------
@@ -1731,6 +2341,12 @@ class PeopleView {
     }
     // 1:1 대화나 통화가 있는 사람, 그리고 단체방 (단체방에서만 본 사람은 빼서 목록이 길어지지 않게)
     const all = [...st.values()].filter((e) => e.own).map((e) => ({ ...e, note: notes.get(e.name) }));
+    // 제목 줄: 👥 연락처 · 개수 · (오른쪽) 전체 보기 — 챙길 날 칸과 같은 모양
+    const head = r.createDiv({ cls: 'rd-section-head rd-people-head' });
+    head.createSpan({ cls: 'rd-section-title', text: '👥 연락처' });
+    this.countEl = head.createSpan({ cls: 'rd-count' });
+    helpTip(head, '카드를 누르면 그 사람과의 약속·할 일, 챙길 날, 통화·카톡 히스토리가 열려요. 단체방 카드는 대화 검색으로 열려요.');
+    this.toggleEl = head.createEl('a', { cls: 'rd-more' });
     // 도구 막대
     const bar = r.createDiv({ cls: 'rd-people-bar' });
     const q = bar.createEl('input', { type: 'search', value: this.q, attr: { placeholder: '이름·번호 찾기 (초성도 돼요)' } });
@@ -1760,10 +2376,16 @@ class PeopleView {
     if (!list.length) { grid.createDiv({ cls: 'rd-empty', text: '찾는 연락처가 없어요.' }); return; }
     // 처음엔 한 줄만 (화면 폭에 맞는 만큼), 찾기 중이거나 펼치면 여러 줄
     const one = !this.open && !this.q.trim();
+    if (this.countEl) this.countEl.setText(String(list.length));
+    if (this.toggleEl) {
+      this.toggleEl.setText(this.open ? '접기 ›' : '전체 보기 ›');
+      this.toggleEl.toggle(!this.q.trim());
+      this.toggleEl.onclick = () => { this.open = !this.open; this.shown = 24; this.draw(grid, all); };
+    }
     const cards = grid.createDiv({ cls: 'rd-cards' + (one ? ' is-one-row' : '') });
     for (const p of list.slice(0, this.shown)) {
       const c = cards.createDiv({ cls: 'rd-card' });
-      c.onclick = (e) => { if (e.target.closest('a')) return; new SearchModal(P, { room: p.name }).open(); };
+      c.onclick = (e) => { if (e.target.closest('a')) return; p.group ? new SearchModal(P, { room: p.name }).open() : new PersonModal(P, p.name).open(); };
       const top = c.createDiv({ cls: 'rd-card-top' });
       top.createDiv({ cls: 'rd-avatar', text: p.group ? '👥' : (p.name.match(/[가-힣A-Za-z]/) || ['#'])[0] });
       const nm = top.createDiv({ cls: 'rd-card-name' });
@@ -1777,16 +2399,9 @@ class PeopleView {
       if (p.gmsg) meta.createSpan({ cls: 'rd-chip', text: `👥 ${p.gmsg.toLocaleString()}` });
       if (p.note) { const a = meta.createEl('a', { cls: 'rd-chip rd-chip-link', text: '노트' }); a.onclick = () => app.workspace.getLeaf(false).openFile(p.note.file); }
     }
-    if (one) {
-      const more = grid.createEl('button', { cls: 'ks-more', text: `전체 보기 (${list.length}${this.kind === 'group' ? '개' : '명'})` });
-      more.onclick = () => { this.open = true; this.draw(grid, all); };
-    } else if (list.length > this.shown) {
+    if (!one && list.length > this.shown) {
       const more = grid.createEl('button', { cls: 'ks-more', text: `더 보기 (${list.length - this.shown}개)` });
       more.onclick = () => { this.shown += 24; this.draw(grid, all); };
-    }
-    if (this.open && !this.q.trim()) {
-      const fold = grid.createEl('button', { cls: 'ks-more', text: '접기' });
-      fold.onclick = () => { this.open = false; this.shown = 24; this.draw(grid, all); };
     }
   }
 }
@@ -1821,6 +2436,7 @@ module.exports = class RappoSearch extends Plugin {
     this.index = new Index(this.app);
     this.days = new Days(this);
     this.tasks = new Tasks(this);
+    this.spend = new Spend(this);
     const handler = (src, el, ctx) => ctx.addChild(new BlockChild(this, el));
     for (const name of ['대화검색', '카톡검색', 'kakao-search']) this.registerMarkdownCodeBlockProcessor(name, handler);
     this.registerMarkdownCodeBlockProcessor('최근연락', (src, el, ctx) => ctx.addChild(new RecentChild(this, el)));
@@ -1885,8 +2501,16 @@ module.exports = class RappoSearch extends Plugin {
     this.addCommand({ id: 'task-add', name: 'Rappo 할 일 추가', callback: () => new TaskModal(this, null, (v) => this.tasks.add(v)).open() });
     // 옵시디언을 열면 하루 한 번, 3일 안에 챙길 날을 알림으로 (맥 알림용 upcoming.json 도 이때 새로 씀)
     this.app.workspace.onLayoutReady(() => setTimeout(() => this.dayNotice(), 8000));
+    // 대시보드 이름: 통화기록 대시보드 → 라포 홈 (옵시디언이 링크도 함께 고친다)
+    this.app.workspace.onLayoutReady(async () => {
+      const old = this.app.vault.getAbstractFileByPath(`${BASE}/통화기록 대시보드.md`);
+      if (old instanceof TFile && !this.app.vault.getAbstractFileByPath(`${BASE}/라포 홈.md`)) {
+        try { await this.app.fileManager.renameFile(old, `${BASE}/라포 홈.md`); } catch (e) { console.warn('Rappo: 이름 변경', e); }
+      }
+    });
     this.registerMarkdownCodeBlockProcessor('할일', (src, el, ctx) => ctx.addChild(new TodoChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('할일챙길날', (src, el, ctx) => ctx.addChild(new BoardChild(this, el)));
+    this.registerMarkdownCodeBlockProcessor('소비', (src, el, ctx) => ctx.addChild(new SpendChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('연락처', (src, el, ctx) => ctx.addChild(new PeopleChild(this, el)));
     this.registerMarkdownCodeBlockProcessor('연락대시보드', (src, el, ctx) => ctx.addChild(new ContactDashChild(this, el)));
     this.addCommand({ id: 'open', name: 'Rappo 대화·통화 검색', callback: () => new SearchModal(this).open() });

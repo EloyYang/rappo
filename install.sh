@@ -55,13 +55,6 @@ step "1/5 도구 설치 (ffmpeg, sqlcipher)"
 for f in ffmpeg sqlcipher; do
   brew list "$f" >/dev/null 2>&1 || brew install "$f"
 done
-# 로컬 AI (요약·할 일·회의록을 맥 안에서) — 선택, 약 4GB
-if ! command -v ollama >/dev/null 2>&1 && ! brew list ollama >/dev/null 2>&1; then
-  yn="$(ask "로컬 AI(Ollama + qwen3.5:4b, 약 4GB)도 설치할까요? 요약·할 일·회의록을 맥 안에서 만들어요. y/N" "N")"
-  if [[ "$yn" =~ ^[Yy] ]]; then
-    brew install ollama && (brew services start ollama || true) && sleep 3 && ollama pull qwen3.5:4b || echo "  ! 로컬 AI 설치를 마치지 못했어요 — 나중에: brew install ollama && ollama pull qwen3.5:4b"
-  fi
-fi
 
 # 2) 파이썬 환경 + 모델
 step "2/5 파이썬 환경·모델 (처음엔 몇 분 걸려요)"
@@ -69,6 +62,16 @@ say "위치: $HOME_DIR"
 PY3="$(command -v python3)"
 [ -x /opt/homebrew/bin/python3 ] && PY3=/opt/homebrew/bin/python3
 [ -d "$HOME_DIR/bin" ] || "$PY3" -m venv "$HOME_DIR"
+# 로컬 AI (요약·할 일·회의록을 맥 안에서) — 선택. Apple 실리콘용 MLX 로 Qwen3.5 4B (약 3GB)
+# (같은 모델을 Ollama 로 돌릴 때보다 약 2배 빠르고, 필요할 때만 띄워서 평소엔 메모리를 쓰지 않음)
+if [ ! -x "$HOME/.venvs/mlx-llm/bin/python" ]; then
+  yn="$(ask "로컬 AI(MLX + Qwen3.5 4B, 약 3GB)도 설치할까요? 요약·할 일·회의록을 맥 안에서 만들어요. y/N" "N")"
+  if [[ "$yn" =~ ^[Yy] ]]; then
+    ("$PY3" -m venv "$HOME/.venvs/mlx-llm" && "$HOME/.venvs/mlx-llm/bin/pip" install -q -U pip mlx-lm \
+      && "$HOME/.venvs/mlx-llm/bin/python" -c "from huggingface_hub import snapshot_download as s; s('mlx-community/Qwen3.5-4B-MLX-4bit')") \
+      || echo "  ! 로컬 AI 설치를 마치지 못했어요 — 나중에 install.sh 를 다시 실행해 주세요"
+  fi
+fi
 "$HOME_DIR/bin/python" -m pip install -q --upgrade pip
 "$HOME_DIR/bin/python" -m pip install -q mlx-whisper sherpa-onnx soundfile
 M="$HOME_DIR/models"; mkdir -p "$M" "$HOME_DIR/kakao" "$HOME_DIR/logs"
@@ -133,9 +136,16 @@ if [ -d /Applications/Obsidian.app ] || [ -f "$HOME/Library/Application Support/
     say "등록된 볼트가 없어요. 옵시디언에서 볼트를 만든 뒤 메뉴막대 Rappo → '옵시디언에 대시보드·검색 설치'를 누르세요."
   else
     say "볼트: $VAULT"
+    # PARA 노트 정리 방식 (Inbox·Projects·Areas·Resources·Archive 폴더, 템플릿, PARA 대시보드, 자동 이동)
+    PARA_ARG=""
+    if [ ! -d "$VAULT/1. Projects" ] && [ ! -d "$VAULT/.obsidian/plugins/para-dashboard" ]; then
+      yn="$(ask "PARA 노트 정리 방식(프로젝트·영역 폴더, 템플릿, PARA 대시보드)도 함께 설치할까요? y/N" "N")"
+      [[ "$yn" =~ ^[Yy] ]] && PARA_ARG="--para"
+    fi
+    if [ -n "$PARA_ARG" ]; then mkdir -p "$VAULT/2. Areas"; fi
     [ -n "$BASE" ] || BASE="$(python3 obsidian_setup.py --vault "$VAULT" --default-base)"
     BASE="$(ask "볼트 안 저장 폴더" "$BASE")"
-    python3 obsidian_setup.py --vault "$VAULT" --base "$BASE" | sed 's/^/  /'
+    python3 obsidian_setup.py --vault "$VAULT" --base "$BASE" $PARA_ARG | sed 's/^/  /'
   fi
 else
   say "옵시디언이 없어요 (https://obsidian.md 에서 설치). 설치 후 이 스크립트를 다시 실행하거나"
@@ -164,5 +174,5 @@ say "  1. 시스템 설정 → 개인정보 보호 및 보안 → 전체 디스�
 say "     (카카오톡 대화와 네트워크 드라이브 녹취를 읽는 데 필요)"
 say "  2. 메뉴막대 Rappo → '로그인 시 자동 실행' 켜기"
 say "  3. 메뉴막대 Rappo → '내 목소리 등록…' 에서 내 목소리만 녹음된 파일을 고르면 전사문에 '나'가 구분돼요"
-say "  4. 옵시디언을 열고 '플러그인을 신뢰/사용' 할지 물으면 허용 → '$BASE/통화기록 대시보드' 노트를 여세요"
+say "  4. 옵시디언을 열고 '플러그인을 신뢰/사용' 할지 물으면 허용 → '$BASE/라포 홈' 노트를 여세요"
 command -v claude >/dev/null || say "  (선택) 통화 요약은 Claude Code(claude 명령)가 있을 때 만들어져요: https://claude.com/claude-code"

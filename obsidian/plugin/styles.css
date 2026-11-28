@@ -217,3 +217,56 @@ div.ks-section-head { cursor: default; }
 /* v15: 연락처 카드 — 처음엔 한 줄만 */
 .rd-cards.is-one-row { grid-template-rows: auto; grid-auto-rows: 0; row-gap: 0; overflow: hidden; }
 .rd-cards.is-one-row > .rd-card { margin-bottom: 0; }
+/* v16: 사람 상세 창 */
+.rd-person-modal { width: min(980px, 95vw); }
+.rd-person-modal .modal-content { max-height: 82vh; overflow-y: auto; }
+.rd-person-head { display: flex; align-items: center; gap: 12px; }
+.rd-avatar-lg { width: 44px; height: 44px; font-size: 19px; }
+.rd-done { text-decoration: line-through; color: var(--text-faint); }
+.rd-when { min-width: 62px; }
+.rd-people-head { margin-bottom: 10px; }
+.rd-people-head .ks-help-text { order: 10; }
+.rd-people-head { flex-wrap: wrap; }
+/* v17: 💳 소비 */
+.sp-bar { height: 6px; background: var(--background-modifier-border); border-radius: 3px; overflow: hidden; margin-top: 5px; }
+.sp-fill { height: 100%; background: var(--interactive-accent); border-radius: 3px; }
+.sp-fill.over { background: #ef4444; }
+.sp-chart { display: flex; align-items: flex-end; gap: 2px; height: 150px; padding: 8px 0 16px; }
+.sp-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; position: relative; min-width: 0; }
+.sp-colbar { background: var(--interactive-accent); opacity: .75; border-radius: 3px 3px 0 0; }
+.sp-col:hover .sp-colbar { opacity: 1; }
+.sp-col.is-today .sp-colbar { opacity: 1; }
+.sp-col.is-future { opacity: .35; }
+.sp-lab { position: absolute; bottom: -16px; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--text-faint); }
+.sp-cat { padding: 7px 4px; border-bottom: 1px solid var(--background-modifier-border); cursor: pointer; border-radius: 6px; }
+.sp-cat:last-child { border-bottom: none; }
+.sp-cat:hover, .sp-cat.is-on { background: var(--background-modifier-hover); }
+.sp-cat-top { display: flex; justify-content: space-between; font-size: 13px; }
+.sp-amt { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; font-size: 13px; flex: none; }
+.sp-row.is-cancel .sp-amt { color: #ef4444; }
+.sp-what { display: block; }
+.sp-sel { font-size: 11px; height: 22px; padding: 0 18px 0 6px; flex: none; width: 118px; }
+/* v18: 소비 연 단위 */
+.sp-chart-y { height: 180px; gap: 8px; padding-top: 18px; }
+.sp-chart-y .sp-col { cursor: pointer; }
+.sp-val { font-size: 10px; color: var(--text-muted); white-space: nowrap; text-align: center; margin-bottom: 2px; }
+.sp-chart-y .sp-colbar { position: relative; }
+.sp-month-row { cursor: pointer; border-radius: 6px; }
+.sp-month-row:hover { background: var(--background-modifier-hover); }
+/* v19: 소비 분류 — 건별·가게별 */
+.sp-check { font-size: 10px; font-weight: 700; color: #d97706; background: rgba(245,158,11,.14); border-radius: 6px; padding: 0 6px; margin-left: 6px; }
+.sp-check-link { color: #d97706; }
+.sp-scope { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0 8px 66px; border-bottom: 1px solid var(--background-modifier-border); }
+.sp-scope button { font-size: 12px; height: 26px; padding: 0 10px; }
+/* v20: 라포 홈 — 이번 달 소비 */
+.hm-mini { display: flex; gap: 10px; align-items: center; margin: 6px 0 4px; }
+.hm-ring { --p: 0%; flex: none; width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(var(--interactive-accent) 0 var(--p), var(--background-modifier-border) var(--p) 100%); }
+.hm-ring.over { background: conic-gradient(#ef4444 0 100%, #ef4444 100%); }
+.hm-ring b { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: var(--background-secondary); }
+.hm-big { font-weight: 700; font-size: 13.5px; }
+/* v21: 라포 홈 — PARA 할 일 보드 */
+.pa-pill { flex: none; font-size: 10.5px; font-weight: 700; border-radius: 8px; padding: 0 7px; color: #fff; }
+.pa-pill.is-doing { background: #3b82f6; } .pa-pill.is-todo { background: #f59e0b; }
+.pa-next { flex: none; cursor: pointer; text-decoration: none; color: var(--text-faint); font-size: 12px; padding: 0 4px; }
+.pa-next:hover { color: var(--interactive-accent); }

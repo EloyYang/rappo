@@ -181,6 +181,27 @@ def _phone(num: str | None) -> str:
     return fmt_phone(re.sub(r"[^\d+]", "", num))
 
 
+CARD_MSGS: list = []   # read_rooms 가 채움: 카톡 현대카드 방의 승인·취소 알림 (message, attachment, sentAt, logId)
+
+
+def _read_card(con):
+    """알림톡(브랜드) 방 중 이름에 '현대카드'가 들어간 방의 승인·취소 알림."""
+    out = []
+    try:
+        users = {r["userId"]: (r["displayName"] or r["nickName"] or "") for r in con.execute("SELECT userId, displayName, nickName FROM NTUser")}
+        ids = [r["chatId"] for r in con.execute("SELECT chatId, chatName, directChatMemberUserId FROM NTChatRoom WHERE type=2")
+               if re.search(r"현대카드", (r["chatName"] or users.get(r["directChatMemberUserId"], "") or ""))]
+        if not ids:
+            return out
+        for r in con.execute(
+                f"SELECT message, attachment, sentAt, logId FROM NTChatMessage WHERE chatId IN ({','.join('?' * len(ids))})"
+                " AND (message LIKE '%승인%' OR message LIKE '%취소%' OR attachment LIKE '%승인%' OR attachment LIKE '%취소%')", ids):
+            out.append((r["message"] or "", r["attachment"] or "", r["sentAt"], str(r["logId"])))
+    except Exception as e:
+        print(f"  ! 현대카드 알림 읽기 실패: {e}", file=sys.stderr)
+    return out
+
+
 def read_rooms(plain: Path, person_only: bool = True) -> tuple[dict[str, list], dict[str, dict]]:
     """(rooms, meta). meta[room] = {kind, phone(1:1 상대 번호), type}."""
     con = sqlite3.connect(f"file:{plain}?mode=ro", uri=True)
@@ -223,6 +244,7 @@ def read_rooms(plain: Path, person_only: bool = True) -> tuple[dict[str, list], 
         meta[name] = {"type": r["type"], "kind": "1:1" if r["type"] == 0 else "단체",
                       "phone": phones.get(r["directChatMemberUserId"], "")}
 
+    CARD_MSGS[:] = _read_card(con)
     rooms: dict[str, list] = {}
     for r in con.execute(
         "SELECT chatId, authorId, message, sentAt FROM NTChatMessage ORDER BY sentAt ASC"):

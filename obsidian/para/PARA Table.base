@@ -1,0 +1,110 @@
+views:
+  - type: table
+    name: 진행 중 프로젝트
+    filters:
+      and:
+        - type == "project"
+        - status == "진행 중" || status == "시작 안 함"
+    groupBy:
+      property: status
+      direction: DESC
+    order:
+      - file.name
+      - status
+      - area
+      - end
+      - created
+    sort:
+      - property: created
+        direction: ASC
+  - type: table
+    name: 전체 프로젝트
+    filters:
+      and:
+        - type == "project"
+    groupBy:
+      property: status
+      direction: ASC
+    order:
+      - file.name
+      - status
+      - area
+      - end
+      - created
+  - type: table
+    name: 노트
+    filters:
+      and:
+        - type == "note"
+    order:
+      - file.name
+      - status
+      - area
+      - project
+      - created
+    sort:
+      - property: created
+        direction: DESC
+  - type: table
+    name: 영역
+    filters:
+      and:
+        - type == "area"
+    order:
+      - file.name
+      - created
+  - type: table
+    name: 자원
+    filters:
+      and:
+        - type == "resource"
+    order:
+      - file.name
+      - created
+  - type: table
+    name: Inbox
+    filters:
+      and:
+        - file.inFolder("0. Inbox")
+    order:
+      - file.name
+      - status
+      - created
+  - type: table
+    name: 아카이브
+    filters:
+      and:
+        - file.inFolder("4. Archive")
+        - type != "subpage"
+    order:
+      - file.name
+      - type
+      - status
+      - end
+  - type: table
+    name: 유형별
+    filters:
+      and:
+        - type != "subpage"
+    groupBy:
+      property: type
+      direction: ASC
+    order:
+      - file.name
+      - type
+      - status
+      - created
+  - type: table
+    name: 상태별
+    filters:
+      and:
+        - type == "note" || type == "project"
+    groupBy:
+      property: status
+      direction: ASC
+    order:
+      - file.name
+      - type
+      - status
+      - area
+      - created

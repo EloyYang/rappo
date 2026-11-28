@@ -22,9 +22,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 NOTE = "할 일.md"
-AI = os.environ.get("RAPPO_AI", "auto").strip() or "auto"
-AI_MODEL = os.environ.get("RAPPO_AI_MODEL", "qwen3.5:4b").strip() or "qwen3.5:4b"
-OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+import llm  # noqa: E402
 WEEK = "월화수목금토일"
 PRIO = {"높음": "⏫", "보통": "🔼", "낮음": "🔽"}
 # 카톡: 이런 말이 있는 날만 AI 에 물어본다 (요청·수락·약속)
@@ -88,35 +86,13 @@ def _prompt(text: str, base: datetime, partner: str, what: str) -> str:
     )
 
 
-def _ollama_up() -> bool:
-    import urllib.request
-    try:
-        with urllib.request.urlopen(OLLAMA + "/api/tags", timeout=2) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-
 def _ask(prompt: str) -> dict | None:
     """AI 에 묻고 JSON 으로 받는다. (이 Ollama 는 구조화 출력을 지원하지 않아 형식을 글로 지시하고 파싱)"""
     prompt += ('\n\n---\n설명 없이 JSON 객체 하나만 출력. 형식: '
                '{"items":[{"task":"","kind":"할일|약속","doer":"나|상대|함께","agreed":true,"due":"","time":"",'
                '"priority":"높음|보통|낮음","context":"","quote":""}]}')
-    use_local = AI == "local" or (AI == "auto" and _ollama_up())
     try:
-        if use_local:
-            import urllib.request
-            body = json.dumps({"model": AI_MODEL, "prompt": prompt, "stream": False, "think": False,
-                               "options": {"temperature": 0, "num_ctx": 8192}}).encode()
-            req = urllib.request.Request(OLLAMA + "/api/generate", data=body, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=600) as r:
-                out = json.loads(r.read().decode()).get("response", "")
-        else:
-            if not shutil.which("claude"):
-                return None
-            r = subprocess.run(["claude", "-p", prompt],
-                               capture_output=True, text=True, timeout=240)
-            out = r.stdout
+        out = llm.generate(prompt, temperature=0)
         m = re.search(r"\{.*\}", out, re.S)
         return json.loads(m.group(0)) if m else None
     except Exception as e:
@@ -156,17 +132,7 @@ def _confirm(task: str, quote: str, text: str) -> bool:
          "내가 상대에게 부탁·질문만 한 것, 상대가 할 일, 상대 연락을 기다리는 것, 정하지 않은 제안이면 false.\n"
          '설명 없이 JSON 하나만: {"ok": true 또는 false}\n\n---\n' + _around(quote, text))
     try:
-        import urllib.request
-        if AI == "claude" or (AI == "auto" and not _ollama_up()):
-            if not shutil.which("claude"):
-                return True
-            out = subprocess.run(["claude", "-p", p], capture_output=True, text=True, timeout=120).stdout
-        else:
-            body = json.dumps({"model": AI_MODEL, "prompt": p, "stream": False, "think": False,
-                               "options": {"temperature": 0, "num_ctx": 4096}}).encode()
-            req = urllib.request.Request(OLLAMA + "/api/generate", data=body, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=300) as r:
-                out = json.loads(r.read().decode()).get("response", "")
+        out = llm.generate(p, ctx=4096, temperature=0, timeout=300)
         m = re.search(r'"ok"\s*:\s*(true|false)', out)
         return bool(m and m.group(1) == "true")
     except Exception:

@@ -331,6 +331,9 @@ def run(src: Path, root: Path, me_names: list[str], from_db: bool = False, min_m
         for room, msgs in db_rooms.items():
             merge(store / f"{safe(room)}.json", room, msgs, meta=db_meta.get(room))
         print(f"카카오톡 DB: 사람·단체방 {len(db_rooms)}개 읽음 (브랜드·알림톡 제외)")
+        if kakao_db.CARD_MSGS:
+            import spend
+            spend.from_kakao_card(root, kakao_db.CARD_MSGS)
 
     names = name_index(cdir)
     phones = phone_index(cdir)

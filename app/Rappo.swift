@@ -63,7 +63,8 @@ final class Settings {
     var kakaoOn: Bool { get { d.bool(forKey: "kakaoOn") } set { d.set(newValue, forKey: "kakaoOn") } }
     // 요약 AI: 0 자동(로컬 모델이 켜져 있으면 로컬) · 1 로컬(Ollama) · 2 Claude Code
     var aiEngine: Int { get { d.integer(forKey: "aiEngine") } set { d.set(newValue, forKey: "aiEngine") } }
-    var aiModel: String { get { (d.string(forKey: "aiModel") ?? "").isEmpty ? "qwen3.5:4b" : d.string(forKey: "aiModel")! } set { d.set(newValue, forKey: "aiModel") } }
+    // 비우면 자동: MLX 가 있으면 mlx-community/Qwen3.5-4B-MLX-4bit, 아니면 Ollama qwen3.5:4b
+    var aiModel: String { get { d.string(forKey: "aiModel") ?? "" } set { d.set(newValue, forKey: "aiModel") } }
     // 캘린더: 챙길 날·대화 일정을 넣을 캘린더 (EventKit — 맥 캘린더에 연결된 구글 캘린더 포함)
     // 정리 시간: 0 실시간 · 1 받아 적기는 바로, AI 정리는 정해진 시간에 · 2 모두 정해진 시간에 몰아서
     var runMode: Int { get { d.integer(forKey: "runMode") } set { d.set(newValue, forKey: "runMode") } }
@@ -105,7 +106,7 @@ final class Settings {
             if let v = d.string(forKey: k), !v.isEmpty { e["APP_RAPPO_" + envKey] = v }
         }
         e["APP_RAPPO_AI"] = ["auto", "local", "claude"][max(0, min(2, aiEngine))]
-        e["APP_RAPPO_AI_MODEL"] = aiModel
+        if !aiModel.isEmpty && aiModel != "qwen3.5:4b" { e["APP_RAPPO_AI_MODEL"] = aiModel }
         return e
     }
 }
@@ -269,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(statusLine)
         menu.addItem(.separator())
         add("지금 정리하기", #selector(runNow), "r")
-        add("옵시디언에서 대시보드 열기", #selector(openDashboard), "d")
+        add("옵시디언에서 라포 홈 열기", #selector(openDashboard), "d")
         menu.addItem(.separator())
         add("설정…", #selector(openSettings), ",")
         add("Rappo 종료", #selector(quit), "q")
@@ -435,7 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let a = p.arguments ?? []
         if a.contains("--setup-obsidian") {
             if p.terminationStatus == 0 {
-                alert("옵시디언 설치 완료", "볼트에 '\(s.baseDir)/통화기록 대시보드'와 검색 플러그인을 넣었습니다.\n옵시디언을 다시 열고, 물어보면 '플러그인 사용(신뢰)'을 눌러 주세요.")
+                alert("옵시디언 설치 완료", "볼트에 '\(s.baseDir)/라포 홈'과 Rappo 플러그인을 넣었습니다.\n옵시디언을 다시 열고, 물어보면 '플러그인 사용(신뢰)'을 눌러 주세요.")
             } else { alert("옵시디언 설치 실패", "로그 보기에서 내용을 확인해 주세요.") }
         } else if a.contains("--enroll") {
             alert(p.terminationStatus == 0 ? "내 목소리를 등록했습니다" : "목소리 등록 실패", p.terminationStatus == 0 ? "다음 통화부터 '나'를 구분합니다." : "로그 보기에서 내용을 확인해 주세요.")
@@ -491,7 +492,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openRecord() { openDir(s.recordDir) }
     @objc func openNotes() { openDir(s.vaultDir + "/" + s.baseDir) }
 
-    var dashboardPath: String { s.vaultDir + "/" + s.baseDir + "/통화기록 대시보드.md" }
+    var dashboardPath: String {
+        let home = s.vaultDir + "/" + s.baseDir + "/라포 홈.md"
+        let old = s.vaultDir + "/" + s.baseDir + "/통화기록 대시보드.md"
+        return FileManager.default.fileExists(atPath: home) || !FileManager.default.fileExists(atPath: old) ? home : old
+    }
     // MARK: 챙길 날 (옵시디언 Rappo 플러그인이 쓰는 upcoming.json)
     struct DayEvent { let date: String; let title: String; let sub: String; let dday: Int
         var icon: String { title.contains("생일") ? "🎂" : title.contains("기념일") || title.contains("주년") ? "💐" : "🗓" } }
@@ -786,7 +791,7 @@ final class SettingsWindow: NSWindowController {
         for p in [runPopup, startPopup, endPopup] { p.target = self; p.action = #selector(changed) }
         aiPopup.addItems(withTitles: ["자동 (로컬 모델이 켜져 있으면 로컬)", "로컬 모델 (Ollama)", "Claude Code"])
         aiPopup.target = self; aiPopup.action = #selector(changed)
-        modelField.placeholderString = "qwen3.5:4b"
+        modelField.placeholderString = "자동 (MLX Qwen3.5-4B)"
         modelField.widthAnchor.constraint(equalToConstant: 180).isActive = true
         modelField.target = self; modelField.action = #selector(changed)
         calPopup.target = self; calPopup.action = #selector(changed)
@@ -839,7 +844,7 @@ final class SettingsWindow: NSWindowController {
             row([NSTextField(labelWithString: "사용할 AI"), aiPopup]),
             row([NSTextField(labelWithString: "로컬 모델"), modelField, button("빈 요약 채우기", #selector(resummarize))]),
             aiState,
-            SettingsWindow.note("로컬 모델은 이 맥 안에서만 돌아서 통화 내용이 밖으로 나가지 않아요. 메모리 8GB 맥은 qwen3.5:4b 를 권해요."),
+            SettingsWindow.note("로컬 모델은 이 맥 안에서만 돌아서 통화 내용이 밖으로 나가지 않아요. 기본은 Apple 실리콘용 MLX 로 돌리는 Qwen3.5 4B 예요 (필요할 때만 띄우고 끝나면 내려요)."),
             gap(),
             header("캘린더"),
             calCheck,
@@ -938,7 +943,7 @@ final class SettingsWindow: NSWindowController {
         let hasVault = FileManager.default.fileExists(atPath: s.vaultDir + "/.obsidian")
         let hasDash = FileManager.default.fileExists(atPath: app.dashboardPath)
         obsidianState.stringValue = !hasVault ? "⚠️ 이 폴더는 옵시디언 볼트가 아니에요. ‘변경…’으로 볼트를 골라 주세요."
-            : hasDash ? "✅ 대시보드: \(s.baseDir)/통화기록 대시보드" : "아직 설치 전이에요. ‘옵시디언에 설치·업데이트’를 눌러 주세요."
+            : hasDash ? "✅ 대시보드: \(s.baseDir)/라포 홈" : "아직 설치 전이에요. ‘옵시디언에 설치·업데이트’를 눌러 주세요."
         watchState.stringValue = "지금: " + app.recordLine.title.replacingOccurrences(of: "녹취: ", with: "")
         let k = s.kakaoOn
         modePopup.isEnabled = k
@@ -956,12 +961,17 @@ final class SettingsWindow: NSWindowController {
         let access = app.calAccess
         calState.stringValue = !access ? "⚠️ 캘린더 접근을 허용해 주세요." : !s.calOn ? "꺼져 있어요." :
             "✅ 켜짐 · 지금까지 \((UserDefaults.standard.dictionary(forKey: "calAdded") ?? [:]).count)개 넣음"
-        aiState.stringValue = "로컬 모델 확인 중…"
-        let model = s.aiModel
-        app.ollamaState { [weak self] up, names in
-            self?.aiState.stringValue = !up ? "⚠️ Ollama 가 꺼져 있어요. 터미널: brew install ollama && brew services start ollama && ollama pull \(model)"
-                : names.contains(where: { $0 == model || $0 == model + ":latest" }) ? "✅ 로컬 모델 준비됨 (\(model))"
-                : "⚠️ 모델이 없어요. 터미널: ollama pull \(model)"
+        let mlxPy = NSHomeDirectory() + "/.venvs/mlx-llm/bin/python"
+        if FileManager.default.fileExists(atPath: mlxPy) {
+            aiState.stringValue = "✅ 로컬 모델 준비됨 (MLX · " + (s.aiModel.isEmpty ? "Qwen3.5-4B" : s.aiModel) + ")"
+        } else {
+            aiState.stringValue = "로컬 모델 확인 중…"
+            let model = s.aiModel.isEmpty ? "qwen3.5:4b" : s.aiModel
+            app.ollamaState { [weak self] up, names in
+                self?.aiState.stringValue = !up ? "⚠️ 로컬 모델이 없어요. 터미널: bash ~/Documents/Rappo/install.sh 에서 로컬 AI 설치를 골라 주세요"
+                    : names.contains(where: { $0 == model || $0 == model + ":latest" }) ? "✅ 로컬 모델 준비됨 (Ollama · \(model))"
+                    : "⚠️ 모델이 없어요. 터미널: ollama pull \(model)"
+            }
         }
     }
 
@@ -980,7 +990,7 @@ final class SettingsWindow: NSWindowController {
         s.winEnd = endPopup.indexOfSelectedItem
         s.aiEngine = aiPopup.indexOfSelectedItem
         let m = modelField.stringValue.trimmingCharacters(in: .whitespaces)
-        s.aiModel = m.isEmpty ? "qwen3.5:4b" : m
+        s.aiModel = m
         s.calOn = calCheck.state == .on
         if let id = calPopup.selectedItem?.representedObject as? String { s.calId = id }
         if s.calOn { app?.syncCalendar() }

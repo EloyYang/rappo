@@ -34,7 +34,7 @@ cat >"$APP/Contents/Info.plist" <<EOF
   <key>CFBundleDisplayName</key><string>Rappo</string>
   <key>CFBundleExecutable</key><string>Rappo</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>3.0</string>
+  <key>CFBundleShortVersionString</key><string>3.1</string>
   <key>CFBundleVersion</key><string>3</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>

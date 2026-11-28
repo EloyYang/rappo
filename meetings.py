@@ -30,13 +30,9 @@ def _r():
 
 
 def _llm(prompt: str) -> str:
-    R = _r()
+    import llm
     try:
-        if R.AI == "local" or (R.AI == "auto" and R._ollama_up()):
-            return R._ollama(prompt)
-        import shutil
-        if shutil.which("claude"):
-            return subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=300).stdout.strip()
+        return llm.generate(prompt, timeout=900)
     except Exception as e:
         print(f"     ! 회의록 정리 실패: {e}", file=sys.stderr)
     return ""

@@ -1,0 +1,9 @@
+{
+  "id": "para-auto-mover",
+  "name": "PARA Auto Mover",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "type·status·area·project 속성에 맞춰 노트를 PARA 폴더로 자동 이동합니다.",
+  "author": "local",
+  "isDesktopOnly": false
+}

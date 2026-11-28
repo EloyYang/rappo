@@ -7,7 +7,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"            # NAS/Rappo (코드·동기화�
 # 로컬 설정 (install.sh 가 생성): RAPPO_HOME, 경로 오버라이드, PATH
 # Rappo.app 설정 창에서 지정한 값(APP_RAPPO_*)이 있으면 그것이 우선한다.
 [ -f "$HERE/config.sh" ] && . "$HERE/config.sh"
-for k in RECORD KAKAO VAULT KAKAO_ME SINCE AI AI_MODEL; do
+for k in RECORD KAKAO VAULT KAKAO_ME SINCE AI AI_MODEL LOCAL_ENGINE MLX_URL; do
   v="APP_RAPPO_$k"
   [ -n "${!v}" ] && export "RAPPO_$k=${!v}"
 done

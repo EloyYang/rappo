@@ -277,9 +277,8 @@ def transcribe(path: Path, other: str = "상대", meeting: bool = False) -> list
     return [ln for ln in lines if ln["text"]]
 
 
-AI = os.environ.get("RAPPO_AI", "auto").strip() or "auto"          # auto | local | claude
-AI_MODEL = os.environ.get("RAPPO_AI_MODEL", "qwen3.5:4b").strip() or "qwen3.5:4b"
-OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+import llm  # noqa: E402
+AI, AI_MODEL = llm.AI, llm.MODEL
 WEEK = "월화수목금토일"
 
 
@@ -295,24 +294,12 @@ def _prompt(transcript: str, when: datetime | None) -> str:
     )
 
 
-def _ollama_up() -> bool:
-    import urllib.request
-    try:
-        with urllib.request.urlopen(OLLAMA + "/api/tags", timeout=2) as r:
-            return r.status == 200
-    except Exception:
-        return False
+def _ollama_up() -> bool:      # (예전 이름 — 다른 모듈 호환)
+    return llm.local_up()
 
 
 def _ollama(prompt: str) -> str:
-    """로컬 모델(Ollama)로 요약. 생각 모드는 끈다."""
-    import json, urllib.request
-    body = json.dumps({"model": AI_MODEL, "prompt": prompt, "stream": False, "think": False,
-                       "options": {"temperature": 0.2, "num_ctx": 8192}}).encode()
-    req = urllib.request.Request(OLLAMA + "/api/generate", data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=600) as r:
-        out = json.loads(r.read().decode()).get("response", "")
-    return re.sub(r"<think>.*?</think>", "", out, flags=re.S).strip()
+    return llm.local(prompt)
 
 
 def summarize(transcript: str, when: datetime | None = None) -> str:
@@ -321,23 +308,13 @@ def summarize(transcript: str, when: datetime | None = None) -> str:
     if len(transcript) < 30:
         return ""
     prompt = _prompt(transcript, when)
-    use_local = AI == "local" or (AI == "auto" and _ollama_up())
     try:
-        if use_local:
-            out = _ollama(prompt)
-            if not out:
-                print("     ! 요약 실패: 로컬 모델 응답 없음", file=sys.stderr)
-            return out
-        if not shutil.which("claude"):
-            return ""
-        r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=180)
-        out = r.stdout.strip()
-        if r.returncode != 0 or not out or out.startswith(("Failed to authenticate", "Error", "Invalid API key")):
-            print(f"     ! 요약 실패: {(out or r.stderr).strip()[:120]}", file=sys.stderr)
-            return ""
+        out = llm.generate(prompt)
+        if not out:
+            print("     ! 요약 실패: AI 응답 없음 (로컬 모델이나 claude 를 확인하세요)", file=sys.stderr)
         return out
     except Exception as e:
-        print(f"     ! 요약 실패 ({'로컬 ' + AI_MODEL if use_local else 'claude'}): {e}", file=sys.stderr)
+        print(f"     ! 요약 실패 ({llm.label()}): {e}", file=sys.stderr)
         return ""
 
 
@@ -706,6 +683,13 @@ def main():
 
     import kakao
     kakao.run(a.kakao_src, root, a.kakao_me, from_db=a.kakao_db, min_msgs=a.kakao_min)
+    # 💳 소비: 카드 이용내역 파일(소비/가져오기)과 카드 승인 문자
+    import spend
+    try:
+        spend.import_files(root)
+        spend.from_sms(root)
+    except Exception as e:
+        print(f"  ! 소비 정리 실패: {e}", file=sys.stderr)
     if not a.no_summary:
         tasks.from_kakao(root, TASK_STATE)
 

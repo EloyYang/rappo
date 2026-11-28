@@ -1,0 +1,9 @@
+{
+  "id": "para-dashboard",
+  "name": "PARA Dashboard",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "para-dashboard 코드블록으로 진행 중 프로젝트·할 일·마감을 한눈에 보여줍니다.",
+  "author": "local",
+  "isDesktopOnly": false
+}
