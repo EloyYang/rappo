@@ -308,3 +308,10 @@ div.ks-section-head { cursor: default; }
 .cal-list { max-height: 460px; }
 @media (max-width: 900px) { .cal-card { grid-template-columns: 1fr; } }
 .cal-list .cal-none { margin-top: 2px; }
+/* v25: 캘린더 편집 */
+.cal-cell { cursor: pointer; }
+.cal-cell:hover { background: var(--background-modifier-hover); }
+.cal-chip, .cal-ev { cursor: pointer; }
+.cal-chip:hover, .cal-ev:hover { filter: brightness(1.08); outline: 1px solid var(--c); }
+.cal-mhead { display: flex; align-items: baseline; gap: 8px; }
+.ks-task-form textarea { width: 100%; resize: vertical; }

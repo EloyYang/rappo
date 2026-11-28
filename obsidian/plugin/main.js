@@ -1918,6 +1918,7 @@ class ContactDash {
     const y = now.getFullYear(), m = now.getMonth();
     const mh = left.createDiv({ cls: 'cal-mhead' });
     mh.createSpan({ cls: 'cal-mtitle', text: `${y}년 ${m + 1}월` });
+    if (data) { const ad = mh.createEl('a', { cls: 'rd-more', text: '＋ 일정' }); ad.onclick = () => new EventModal(P, null, td, data, () => this.render()).open(); }
     if (!data) mh.createSpan({ cls: 'rd-muted', text: ' · 캘린더 연결 전 (Rappo 설정 › 정리·AI·캘린더 › 접근 허용)' });
     const grid = left.createDiv({ cls: 'cal-grid' });
     WEEK.forEach((w, i) => grid.createDiv({ cls: 'cal-wh' + (i === 0 || i === 6 ? ' is-we' : ''), text: w }));
@@ -1925,34 +1926,33 @@ class ContactDash {
     for (let i = 0; i < 42; i++) {
       const d = new Date(startD); d.setDate(startD.getDate() + i);
       const ds = ymd(d), inM = d.getMonth() === m;
-      const cell = grid.createDiv({ cls: 'cal-cell' + (inM ? '' : ' is-out') + (ds === td ? ' is-today' : '') });
+      const cell = grid.createDiv({ cls: 'cal-cell' + (inM ? '' : ' is-out') + (ds === td ? ' is-today' : ''), attr: { 'aria-label': data ? '빈 곳을 누르면 이 날 일정 추가' : '' } });
+      if (data) cell.onclick = (e) => { if (e.target.closest('.cal-chip')) return; new EventModal(P, null, ds, data, () => this.render()).open(); };
       cell.createDiv({ cls: 'cal-num', text: d.getDate() === 1 && !inM ? `${d.getMonth() + 1}월 1일` : String(d.getDate()) });
       const day = evs.filter((e) => e.allDay ? (e.d <= ds && ds < (e.de > e.d ? e.de : ymd(new Date(new Date(e.d + 'T12:00:00').getTime() + 86400000)))) : e.d === ds);
       for (const e of day.slice(0, 2)) {
         const x = cell.createDiv({ cls: 'cal-chip' + (e.allDay ? ' is-all' : ''), attr: { 'aria-label': `${e.title}${e.allDay ? '' : ' · ' + hm(e.t)}${e.location ? ' · ' + e.location : ''}` } });
         x.style.setProperty('--c', e.color || '#7c5cff');
+        x.onclick = () => new EventModal(P, e, e.d, data, () => this.render()).open();
         x.createSpan({ cls: 'cal-chip-t', text: e.title || '(제목 없음)' });
         if (!e.allDay) x.createSpan({ cls: 'cal-chip-h', text: hm(e.t) });
       }
       if (day.length > 2) cell.createDiv({ cls: 'cal-more', text: `+${day.length - 2}` });
     }
-    // 오른쪽: 오늘 + 다가오는 일정
-    const tw = right.createDiv({ cls: 'cal-todayhead' });
-    tw.createSpan({ cls: 'cal-wd', text: `${WEEK[now.getDay()]}요일 ` });
-    tw.createSpan({ cls: 'cal-big', text: String(now.getDate()) });
+    // 오른쪽: 다가오는 일정 (오늘 남은 일정부터, 누르면 편집)
     const nowHM = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
     const ev = (box, e) => {
       const x = box.createDiv({ cls: 'cal-ev' });
       x.style.setProperty('--c', e.color || '#7c5cff');
+      x.onclick = () => new EventModal(P, e, e.d, data, () => this.render()).open();
       x.createDiv({ cls: 'cal-ev-title', text: e.title || '(제목 없음)' });
       if (!e.allDay) x.createDiv({ cls: 'cal-ev-time', text: `${hm(e.t)}~${hm(e.te)}` + (e.location ? ` · ${e.location}` : '') });
     };
     const todays = evs.filter((e) => e.d === td && (e.allDay || e.te > nowHM));
-    if (!todays.length) right.createDiv({ cls: 'cal-none', text: data ? '오늘 더 이상 이벤트 없음' : '' });
-    else for (const e of todays.slice(0, 3)) ev(right, e);
+    if (todays.length) { right.createDiv({ cls: 'cal-day', text: '오늘' }); for (const e of todays.slice(0, 3)) ev(right, e); }
     let last = '', shown = 0;
     for (const e of evs.filter((x) => x.d > td && x.d <= ymd(new Date(now.getTime() + 14 * 86400000)))) {
-      if (shown >= 5) break;
+      if (shown >= 6) break;
       if (e.d !== last) { last = e.d; const dd = new Date(e.d + 'T12:00:00'); right.createDiv({ cls: 'cal-day', text: `${dd.getMonth() + 1}월 ${dd.getDate()}일 ${WEEK[dd.getDay()]}요일` }); }
       ev(right, e); shown++;
     }
@@ -2018,6 +2018,72 @@ class ContactDash {
     await app.workspace.getLeaf(false).openFile(f);
   }
 }
+// 캘린더 일정 추가·고치기·지우기 — calendar-edits.json 에 적으면 Rappo 앱이 맥 캘린더(구글 캘린더 포함)에 반영
+class EventModal extends Modal {
+  constructor(plugin, ev, date, data, done) { super(plugin.app); this.plugin = plugin; this.ev = ev; this.date = date; this.data = data || {}; this.done = done; }
+  onOpen() {
+    const e = this.ev, c = this.contentEl, editable = !e || e.editable !== false;
+    this.titleEl.setText(e ? (editable ? '일정 고치기' : '일정 보기') : '새 일정');
+    c.addClass('ks-task-form');
+    const row = (label, el) => { const r = c.createDiv({ cls: 'ks-form-row' }); r.createEl('label', { text: label }); r.appendChild(el); return el; };
+    const title = row('제목', createEl('input', { type: 'text', value: e ? e.title : '' }));
+    const date = row('날짜', createEl('input', { type: 'date', value: e ? e.d : this.date }));
+    const allWrap = createDiv(); const all = allWrap.createEl('input', { type: 'checkbox' }); allWrap.appendText(' 하루 종일');
+    all.checked = e ? !!e.allDay : false;
+    row('', allWrap);
+    const st = row('시작', createEl('input', { type: 'time', value: e && !e.allDay ? e.t : '10:00' }));
+    const en = row('끝', createEl('input', { type: 'time', value: e && !e.allDay ? e.te : '11:00' }));
+    const loc = row('장소', createEl('input', { type: 'text', value: e ? e.location || '' : '' }));
+    const memo = row('메모', createEl('textarea', { attr: { rows: 3 } }));
+    memo.value = e ? (e.notes || '').replace(/\n— Rappo$/, '') : '';
+    let calSel = null;
+    if (!e && (this.data.calendars || []).length) {
+      calSel = row('캘린더', createEl('select', { cls: 'dropdown' }));
+      for (const k of this.data.calendars) calSel.createEl('option', { value: k.id, text: k.title });
+      if (this.data.defaultCal) calSel.value = this.data.defaultCal;
+    }
+    if (e) c.createDiv({ cls: 'rd-muted', text: `캘린더: ${e.calendar}${editable ? '' : ' (읽기 전용 — 이 캘린더는 여기서 고칠 수 없어요)'}` });
+    const sync = () => { st.disabled = en.disabled = all.checked; };
+    all.onchange = sync; sync();
+    [title, date, st, en, loc, memo].forEach((x) => { x.disabled = x.disabled || !editable; });
+    const btns = c.createDiv({ cls: 'ks-guess-btns' });
+    if (editable) {
+      const save = btns.createEl('button', { text: '저장', cls: 'mod-cta' });
+      save.onclick = async () => {
+        if (!title.value.trim() || !date.value) { title.focus(); return; }
+        const next = (d) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + 1); return ymd(x); };
+        const op = { op: e ? 'update' : 'add', id: e ? e.id : undefined, title: title.value.trim(), allDay: all.checked,
+          start: all.checked ? `${date.value}T00:00` : `${date.value}T${st.value || '10:00'}`,
+          end: all.checked ? `${next(date.value)}T00:00` : `${date.value}T${en.value || st.value || '11:00'}`,
+          location: loc.value, notes: memo.value, calId: calSel ? calSel.value : undefined };
+        await this.push(op);
+        new Notice(e ? '📅 일정을 고쳤어요 (곧 캘린더에 반영)' : '📅 일정을 넣었어요 (곧 캘린더에 반영)');
+        this.close();
+      };
+    }
+    if (e && editable) {
+      const del = btns.createEl('button', { text: '삭제' });
+      del.onclick = async () => {
+        if (!window.confirm(`'${e.title}' 일정을 캘린더에서 지울까요?\n구글 캘린더에서도 지워져요.`)) return;
+        await this.push({ op: 'delete', id: e.id });
+        new Notice('🗑 일정을 지웠어요 (곧 캘린더에 반영)');
+        this.close();
+      };
+    }
+    btns.createEl('button', { text: '닫기' }).onclick = () => this.close();
+    setTimeout(() => title.focus(), 50);
+  }
+  async push(op) {
+    const ad = this.app.vault.adapter, p = `${this.plugin.manifest.dir}/calendar-edits.json`;
+    let ops = [];
+    try { ops = JSON.parse(await ad.read(p)); } catch (err) { ops = []; }
+    ops.push(op);
+    await ad.write(p, JSON.stringify(ops, null, 1));
+    if (this.done) setTimeout(this.done, 3000);   // Rappo 앱이 반영하고 새 일정 목록을 쓰면 다시 그림
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 class ContactDashChild extends MarkdownRenderChild {
   constructor(plugin, el) { super(el); this.plugin = plugin; }
   onload() {

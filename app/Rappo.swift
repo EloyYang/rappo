@@ -212,6 +212,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // 옵시디언 플러그인이 calendar.json 을 고치면 바로 캘린더에 반영
         calWatcher = Watcher(path: pluginDir) { [weak self] paths in
+            if paths.contains(where: { $0.hasSuffix("calendar-edits.json") }) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.applyEdits() }
+            }
             guard paths.contains(where: { $0.hasSuffix("calendar.json") }) else { return }
             self?.calDebounce?.invalidate()
             self?.calDebounce = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in self?.syncCalendar() }
@@ -622,13 +625,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return String(format: "#%02x%02x%02x", Int(rgb.redComponent * 255), Int(rgb.greenComponent * 255), Int(rgb.blueComponent * 255))
         }
         let list: [[String: Any]] = events.events(matching: pred).sorted { $0.startDate < $1.startDate }.prefix(300).map { e in
-            ["title": e.title ?? "", "start": f.string(from: e.startDate), "end": f.string(from: e.endDate), "allDay": e.isAllDay,
-             "color": hex(e.calendar.cgColor), "calendar": e.calendar.title, "location": e.location ?? ""]
+            ["id": e.eventIdentifier ?? "", "title": e.title ?? "", "start": f.string(from: e.startDate), "end": f.string(from: e.endDate), "allDay": e.isAllDay,
+             "color": hex(e.calendar.cgColor), "calendar": e.calendar.title, "calId": e.calendar.calendarIdentifier,
+             "editable": e.calendar.allowsContentModifications, "location": e.location ?? "", "notes": e.notes ?? ""]
         }
-        let obj: [String: Any] = ["made": f.string(from: Date()), "events": list]
+        let cals = events.calendars(for: .event).filter { $0.allowsContentModifications }.map { ["id": $0.calendarIdentifier, "title": $0.title, "color": hex($0.cgColor)] }
+        let obj: [String: Any] = ["made": f.string(from: Date()), "events": list, "calendars": cals, "defaultCal": s.calId]
         if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {
             try? data.write(to: URL(fileURLWithPath: pluginDir + "/calendar-events.json"))
         }
+    }
+
+    // 옵시디언 라포 홈에서 고친 일정 (calendar-edits.json: [{op: add|update|delete, id, title, start, end, allDay, location, notes, calId}])
+    func applyEdits() {
+        let p = pluginDir + "/calendar-edits.json"
+        guard calAccess, let data = FileManager.default.contents(atPath: p),
+              let ops = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], !ops.isEmpty else { return }
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; f.timeZone = TimeZone.current
+        let fd = DateFormatter(); fd.locale = Locale(identifier: "en_US_POSIX"); fd.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        func date(_ v: Any?) -> Date? { guard let s = v as? String else { return nil }; return f.date(from: s) ?? fd.date(from: String(s.prefix(16))) }
+        var n = 0
+        for o in ops {
+            let op = o["op"] as? String ?? ""
+            do {
+                if op == "delete", let id = o["id"] as? String, let ev = events.event(withIdentifier: id) {
+                    try events.remove(ev, span: .thisEvent, commit: false); n += 1
+                } else if op == "add" || op == "update" {
+                    let ev: EKEvent
+                    if op == "update", let id = o["id"] as? String, let old = events.event(withIdentifier: id) { ev = old }
+                    else {
+                        ev = EKEvent(eventStore: events)
+                        ev.calendar = (o["calId"] as? String).flatMap { events.calendar(withIdentifier: $0) }
+                            ?? events.calendar(withIdentifier: s.calId) ?? events.defaultCalendarForNewEvents
+                    }
+                    if let t = o["title"] as? String { ev.title = t }
+                    if let l = o["location"] as? String { ev.location = l }
+                    if let nt = o["notes"] as? String { ev.notes = nt }
+                    if let a = o["allDay"] as? Bool { ev.isAllDay = a }
+                    if let st = date(o["start"]) { ev.startDate = st }
+                    if let en = date(o["end"]) { ev.endDate = en } else if ev.endDate == nil || ev.endDate < ev.startDate { ev.endDate = ev.startDate.addingTimeInterval(3600) }
+                    try events.save(ev, span: .thisEvent, commit: false); n += 1
+                }
+            } catch { NSLog("Rappo 일정 편집 실패: \(error)") }
+        }
+        if n > 0 { try? events.commit() }
+        try? FileManager.default.removeItem(atPath: p)
+        exportEvents()
     }
 
     // 로컬 모델(Ollama) 상태

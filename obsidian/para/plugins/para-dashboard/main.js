@@ -42,11 +42,12 @@ function statusClass(s) {
 }
 
 class NameModal extends Modal {
-  constructor(app, title, onSubmit) { super(app); this.titleText = title; this.onSubmit = onSubmit; }
+  constructor(app, title, onSubmit, value, btnText) { super(app); this.titleText = title; this.onSubmit = onSubmit; this.value = value || ''; this.btnText = btnText || '만들기'; }
   onOpen() {
     this.titleEl.setText(this.titleText);
     const input = this.contentEl.createEl('input', { type: 'text', cls: 'pd-modal-input', attr: { placeholder: '이름' } });
-    const btn = this.contentEl.createEl('button', { text: '만들기', cls: 'mod-cta pd-modal-btn' });
+    input.value = this.value;
+    const btn = this.contentEl.createEl('button', { text: this.btnText, cls: 'mod-cta pd-modal-btn' });
     const go = () => { const v = input.value.trim(); if (!v) return; this.close(); this.onSubmit(v); };
     btn.onclick = go;
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) go(); });
@@ -84,9 +85,30 @@ const STATUS_BY_TYPE = {
   note: NOTE_STATUS, project: PROJECT_STATUS, area: ['영역', '아카이브'], resource: ['자원'], archive: ['아카이브'],
 };
 
+// 고르기 창. opts.kind 가 있으면 영역·프로젝트를 여기서 바로 만들고(＋), 이름 바꾸고(⌘E), 지울 수(⌘⌫) 있다.
 class PickModal extends FuzzySuggestModal {
-  constructor(app, items, placeholder, onPick) { super(app); this.items = items; this.onPick = onPick; this.setPlaceholder(placeholder); }
-  getItems() { return this.items; }
+  constructor(app, items, placeholder, onPick, opts) {
+    super(app); this.items = items; this.onPick = onPick; this.opts = opts || {}; this.setPlaceholder(placeholder);
+    if (this.opts.kind) {
+      const label = this.opts.kindLabel;
+      this.setInstructions([
+        { command: '↵', purpose: '고르기' },
+        { command: '입력 후 ↵', purpose: `새 ${label} 만들기` },
+        { command: '⌘E', purpose: '이름 바꾸기' },
+        { command: '⌘⌫', purpose: '지우기' },
+      ]);
+      const cur = () => { const c = this.chooser; const v = c && c.values && c.values[c.selectedItem]; return v && v.item && v.item.name && !v.item.create ? v.item : null; };
+      this.scope.register(['Mod'], 'e', (e) => { e.preventDefault(); const it = cur(); if (it) { this.close(); this.opts.onRename(it.name); } return false; });
+      this.scope.register(['Mod'], 'Backspace', (e) => { e.preventDefault(); const it = cur(); if (it) { this.close(); this.opts.onDelete(it.name); } return false; });
+    }
+  }
+  getItems() {
+    const q = (this.inputEl.value || '').trim();
+    if (this.opts.kind && q && !this.items.some((i) => i.name === q)) {
+      return [{ create: true, name: q, label: `＋ 새 ${this.opts.kindLabel} 「${q}」 만들기` }, ...this.items];
+    }
+    return this.items;
+  }
   getItemText(it) { return it.label; }
   onChooseItem(it) { this.onPick(it); }
 }
@@ -154,7 +176,10 @@ class PropModal extends Modal {
       linkField('area', 'area', () => {
         const list = P.scopedAreas(s.project).filter(({ i }) => !s.area.includes(i.name))
           .map(({ i, fromProject }) => ({ name: i.name, label: `${i.name}  · ${TYPE_LABEL[i.type]}${fromProject ? ' · 이 프로젝트의 영역' : ''}${ARCH(i)}` }));
-        new PickModal(this.app, list, '영역·리소스 검색', (it) => { s.area.push(it.name); this.paint(); }).open();
+        new PickModal(this.app, list, '영역·리소스 검색 (없으면 입력해서 새로 만들기)', async (it) => {
+          if (it.create) it = { name: await P.createPara('area', it.name) };
+          s.area.push(it.name); this.paint();
+        }, { kind: 'area', kindLabel: '영역', onRename: (n) => P.renamePara(n), onDelete: (n) => P.deletePara(n) }).open();
       }, s.project.length ? '고른 프로젝트의 영역이 맨 위에 나와요' : '');
     }
     // project: only for notes (or if already set), narrowed to the chosen area
@@ -165,12 +190,13 @@ class PropModal extends Modal {
           .map((p) => ({ name: p.name, label: `${p.name}${p.status ? '  · ' + p.status : ''}${ARCH(p)}` }));
         if (sc.scoped && sc.rest) list.push({ more: true, label: `… 다른 영역 프로젝트도 보기 (${sc.rest}개)` });
         const ph = sc.scoped ? `[${s.area.join(', ')}] 영역의 프로젝트` : '프로젝트 검색 (진행 중 → 대기 → 아카이브 순)';
-        new PickModal(this.app, list, ph, (it) => {
+        new PickModal(this.app, list, ph + ' (없으면 입력해서 새로 만들기)', async (it) => {
           if (it.more) { setTimeout(() => openProj(true), 0); return; }
+          if (it.create) it = { name: await P.createPara('project', it.name) };
           s.project.push(it.name);
           if (!s.area.length) s.area = P.areasOfProject(it.name);
           this.paint();
-        }).open();
+        }, { kind: 'project', kindLabel: '프로젝트', onRename: (n) => P.renamePara(n), onDelete: (n) => P.deletePara(n) }).open();
       };
       linkField('project', 'project', openProj,
         s.area.length ? `[${s.area.join(', ')}] 영역의 프로젝트만 보여요` : 'area를 먼저 고르면 그 영역의 프로젝트만 보여요');
@@ -580,6 +606,48 @@ module.exports = class ParaDashboard extends Plugin {
       return lines.join('\n');
     });
   }
+  // ---------- 영역·프로젝트 관리 (고르기 창에서) ----------
+  async createPara(kind, name) {
+    const safe = name.replace(/[\\/:*?"<>|#^[\]]/g, ' ').trim();
+    const folder = normalizePath(`${kind === 'project' ? '1. Projects' : '2. Areas'}/${safe}`);
+    const path = normalizePath(`${folder}/${safe}.md`);
+    if (this.app.vault.getAbstractFileByPath(path)) return safe;
+    const tpl = this.app.vault.getAbstractFileByPath(kind === 'project' ? '_Templates/프로젝트.md' : '_Templates/영역.md');
+    let body = tpl instanceof TFile ? await this.app.vault.read(tpl) : `---\ntype: ${kind}\nstatus: ${kind === 'project' ? '시작 안 함' : '영역'}\ncreated: {{date}}\n---\n`;
+    body = body.replace(/\{\{date(:[^}]*)?\}\}/g, (m, f) => window.moment().format(f ? f.slice(1) : 'YYYY-MM-DD')).replace(/\{\{title\}\}/g, safe);
+    if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+    await this.app.vault.create(path, body);
+    new Notice(`새 ${kind === 'project' ? '프로젝트' : '영역'}: ${safe}`);
+    return safe;
+  }
+  findPara(name) {
+    const f = this.app.metadataCache.getFirstLinkpathDest(name, '');
+    return f instanceof TFile ? f : null;
+  }
+  renamePara(name, after) {
+    const f = this.findPara(name);
+    if (!f) { new Notice(`'${name}' 노트를 찾지 못했어요`); return; }
+    new NameModal(this.app, `'${name}' 이름 바꾸기`, async (v) => {
+      const safe = v.replace(/[\\/:*?"<>|#^[\]]/g, ' ').trim();
+      if (!safe || safe === name) return;
+      // 폴더 이름이 같으면(1. Projects/이름/이름.md) 폴더도 함께 — 옵시디언이 링크를 모두 고친다
+      const parent = f.parent;
+      await this.app.fileManager.renameFile(f, normalizePath(`${parent.path}/${safe}.md`));
+      if (parent && parent.name === name) await this.app.fileManager.renameFile(parent, normalizePath(`${parent.parent ? parent.parent.path + '/' : ''}${safe}`));
+      new Notice(`이름 바꿈: ${name} → ${safe}`);
+      if (after) setTimeout(after, 300);
+    }, name, '바꾸기').open();
+  }
+  async deletePara(name, after) {
+    const f = this.findPara(name);
+    if (!f) { new Notice(`'${name}' 노트를 찾지 못했어요`); return; }
+    const linked = (this.app.metadataCache.resolvedLinks ? Object.values(this.app.metadataCache.resolvedLinks).filter((m) => m[f.path]).length : 0);
+    if (!window.confirm(`'${name}'을(를) 지울까요?\n이 노트에 연결된 노트 ${linked}개는 그대로 남고, 지운 노트는 옵시디언 휴지통(.trash)에서 되살릴 수 있어요.`)) return;
+    await this.app.vault.trash(f, false);
+    new Notice(`지움: ${name} (휴지통)`);
+    if (after) setTimeout(after, 300);
+  }
+
   newItem(kind, status) {
     const LABEL = { note: '새 노트', project: '새 프로젝트', area: '새 영역' };
     new NameModal(this.app, (LABEL[kind] || '새 노트') + (status ? ` · ${status}` : ''), async (name) => {
@@ -707,8 +775,11 @@ module.exports = class ParaDashboard extends Plugin {
       if (sc.scoped && sc.rest) items.push({ more: true, label: `… 다른 영역 프로젝트도 보기 (${sc.rest}개)` });
       placeholder = (sc.scoped ? `${it.name} — [${areaNames.join(', ')}] 영역의 프로젝트` : `${it.name} — 프로젝트 선택`) + ' (✓ 항목을 다시 누르면 빠져요)';
     }
+    const kind = key === 'area' ? 'area' : 'project';
+    const again = () => this.pickLink(it, key, showAll);
     new PickModal(this.app, items, placeholder, async (pick) => {
       if (pick.more) { setTimeout(() => this.pickLink(it, key, true), 0); return; }
+      if (pick.create) pick = { name: await this.createPara(kind, pick.name) };
       let autoArea = [], removed = false;
       await this.app.fileManager.processFrontMatter(it.file, (fm) => {
         const now = asList(fm[key]).map(linkName).filter(Boolean);
@@ -724,7 +795,8 @@ module.exports = class ParaDashboard extends Plugin {
       new Notice(pick.clear ? `${it.name}: ${label} 비움`
         : removed ? `${it.name}: ${pick.name} 뺌`
         : `${it.name} → ${pick.name}${autoArea.length ? ` (영역: ${autoArea.join(', ')})` : ''}`);
-    }).open();
+    }, { kind, kindLabel: kind === 'area' ? '영역' : '프로젝트',
+      onRename: (name) => this.renamePara(name, again), onDelete: (name) => this.deletePara(name, again) }).open();
   }
   editBtn(parent, it) {
     const b = parent.createEl('button', { text: '✎', cls: 'pd-edit', attr: { 'aria-label': '속성 편집 (type·status·area·project·마감일)' } });
